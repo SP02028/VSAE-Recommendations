@@ -11,8 +11,7 @@ Mirrors contentbased.py from the original Spotify app:
 import numpy as np
 import pandas as pd
 from sklearn.metrics.pairwise import cosine_similarity
-
-from vsae_data import load_and_engineer, build_feature_matrix
+import re
 
 
 def get_recommendations(
@@ -50,15 +49,44 @@ def get_recommendations(
     query_idx = matches.index[0]
     query_vec = feature_matrix[query_idx].reshape(1, -1)
 
-    # ── Compute cosine similarity ─────────────────────────────────────────────
-    # This is the identical call as in the original contentbased.py
-    sims = cosine_similarity(query_vec, feature_matrix)[0]
+    # ── Build weighted graph from cosine similarities ─────────────────────────
+    sim_matrix = cosine_similarity(feature_matrix)
+    np.fill_diagonal(sim_matrix, 0.0)
 
-    # ── Repertoire toggle (ONE-LINE CHANGE from original) ─────────────────────
+    # Keep only top-k outbound edges per node to reduce noise in the graph.
+    n = sim_matrix.shape[0]
+    k = min(12, max(3, n // 10))
+    pruned = np.zeros_like(sim_matrix)
+    if n > 1:
+        for i in range(n):
+            row = sim_matrix[i]
+            top_idx = np.argsort(row)[-k:]
+            pruned[i, top_idx] = np.clip(row[top_idx], 0.0, None)
+
+    # Row-normalize to transition probabilities.
+    row_sums = pruned.sum(axis=1, keepdims=True)
+    transition = np.divide(
+        pruned,
+        np.where(row_sums == 0, 1.0, row_sums),
+        where=True,
+    )
+
+    # Personalized PageRank centered on the selected song.
+    alpha = 0.85
+    teleport = np.zeros(n)
+    teleport[query_idx] = 1.0
+    rank = teleport.copy()
+    for _ in range(100):
+        next_rank = alpha * (transition.T @ rank) + (1.0 - alpha) * teleport
+        if np.linalg.norm(next_rank - rank, ord=1) < 1e-10:
+            rank = next_rank
+            break
+        rank = next_rank
+
+    scores = rank
+
     if repertoire_mode == 'different':
-        scores = 1.0 - sims
-    else:
-        scores = sims
+        scores = 1.0 - scores
 
     # ── Build result DataFrame ────────────────────────────────────────────────
     results = df.copy()
@@ -73,13 +101,10 @@ def get_recommendations(
                       '', song_title, flags=re.IGNORECASE).strip()
         results = results[~results['Title'].str.startswith(base)]
 
-    # Sort
+    # Sort (highest score first)
     results = results.sort_values('Score', ascending=False)
 
     output_cols = ['Title', 'Composer', 'VocalRange', 'Class', 'Language',
                    'Genre', 'Era', 'RangeSpan', 'RuntimeSeconds', 'Score']
     available = [c for c in output_cols if c in results.columns]
     return results[available].head(top_n).reset_index(drop=True)
-
-
-import re  # needed for exclude_same_base — imported here to keep top clean

@@ -103,8 +103,8 @@ with tab2:
     st.subheader("Content-Based Song Recommendation")
     st.markdown(
         "Select a song and the features you care about. "
-        "The engine uses **cosine similarity** on a weighted feature vector — "
-        "same algorithm as the original app, just with VSAE features."
+        "The engine builds a weighted similarity graph from selected features "
+        "and ranks songs with **Personalized PageRank**."
     )
 
     col_left, col_right = st.columns([1, 2])
@@ -129,9 +129,9 @@ with tab2:
             options=["similar", "different"],
             index=0,
             help=(
-                "'Similar' returns highest cosine similarity scores. "
-                "'Different' inverts the score (1 - cosine_sim) to find "
-                "songs that contrast with the selected one."
+                "'Similar' returns songs with highest Personalized PageRank "
+                "relative to the selected song. 'Different' inverts the rank "
+                "to surface contrasting pieces."
             ),
         )
 
@@ -154,7 +154,7 @@ with tab2:
             if not selected_features:
                 st.warning("Please select at least one feature.")
             else:
-                with st.spinner("Computing similarity..."):
+                with st.spinner("Running Personalized PageRank on song graph..."):
                     try:
                         feat_matrix = build_feature_matrix(df, selected_features)
                         results = get_recommendations(
@@ -169,7 +169,7 @@ with tab2:
                         mode_label = "most similar to" if repertoire_mode == "similar" else "most different from"
                         st.success(
                             f"Top {top_n} songs **{mode_label}** "
-                            f"*{selected_song}* based on: {', '.join(selected_features)}"
+                            f"*{selected_song}* based on PageRank over: {', '.join(selected_features)}"
                         )
 
                         # ── Display selected song info ──────────────────────
