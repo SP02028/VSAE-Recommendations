@@ -287,62 +287,33 @@ with tab1:
     similarity_enabled = False
 
     if use_similarity_filter:
-    
-        rec_df = filtered.copy() 
+        rec_df = filtered.copy()
         song_list = sorted(rec_df['Title'].dropna().unique().tolist())
 
         if not song_list:
             st.warning("No songs are available for similarity scoring.")
         else:
             selected_song = st.selectbox("Query song", song_list)
-
-            st.markdown("#### Similarity Features")
-            use_vocalrange = st.checkbox("Vocal Range", value=True)
-            use_class = st.checkbox("Difficulty (Class)", value=True)
-            use_language = st.checkbox("Language", value=True)
-            use_genre = st.checkbox("Genre", value=True)
-            use_era = st.checkbox("Era / Time Period", value=False)
-            use_rangespan = st.checkbox("Note Range Span", value=False)
-            use_runtime = st.checkbox("Runtime", value=False)
-
-            repertoire_mode = st.radio(
-                "Similarity mode",
-                options=["similar", "different"],
-                index=0,
-                help="'Different' surfaces songs that contrast with the query song.",
-            )
-            exclude_transpositions = st.checkbox("Exclude other keys of the same piece", value=True)
             similarity_min = st.slider("Minimum similarity score", 0.0, 1.0, 0.0, 0.01)
 
-            selected_features = []
-            if use_vocalrange: selected_features.append('VocalRange')
-            if use_class: selected_features.append('Class')
-            if use_language: selected_features.append('Language')
-            if use_genre: selected_features.append('Genre')
-            if use_era: selected_features.append('Era')
-            if use_rangespan: selected_features.append('RangeSpan')
-            if use_runtime: selected_features.append('Runtime')
+            try:
+                selected_features = ['VocalRange', 'Class', 'Language', 'Genre', 'Era', 'RangeSpan', 'Runtime']
+                feat_matrix = build_feature_matrix(rec_df, selected_features)
+                similarity_series = get_recommendation_scores(
+                    df=rec_df,
+                    feature_matrix=feat_matrix,
+                    song_title=selected_song,
+                    repertoire_mode='similar',
+                    exclude_same_base=True,
+                )
 
-            if not selected_features:
-                st.warning("Pick at least one similarity feature.")
-            else:
-                try:
-                    feat_matrix = build_feature_matrix(rec_df, selected_features)
-                    similarity_series = get_recommendation_scores(
-                        df=rec_df,
-                        feature_matrix=feat_matrix,
-                        song_title=selected_song,
-                        repertoire_mode=repertoire_mode,
-                        exclude_same_base=exclude_transpositions,
-                    )
-
-                    filtered = filtered.copy()
-                    filtered['SimilarityScore'] = similarity_series.reindex(filtered.index)
-                    filtered = filtered[filtered['SimilarityScore'].notna()]
-                    filtered = filtered[filtered['SimilarityScore'] >= similarity_min]
-                    similarity_enabled = True
-                except Exception as e:
-                    st.error(f"Similarity scoring error: {e}")
+                filtered = filtered.copy()
+                filtered['SimilarityScore'] = similarity_series.reindex(filtered.index)
+                filtered = filtered[filtered['SimilarityScore'].notna()]
+                filtered = filtered[filtered['SimilarityScore'] >= similarity_min]
+                similarity_enabled = True
+            except Exception as e:
+                st.error(f"Similarity scoring error: {e}")
 
     base_filtered = filtered.copy()
 
