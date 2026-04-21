@@ -294,7 +294,8 @@ with tab1:
 
     with col_left:
         st.markdown("#### 🎵 Query Song")
-        rec_df = filtered.copy()
+        use_query_filters = st.checkbox("Limit query songs to current filters", value=True)
+        rec_df = filtered.copy() if use_query_filters else df.copy()
         song_list = sorted(rec_df['Title'].dropna().unique().tolist())
         if not song_list:
             st.warning("No songs are available for the current filters.")
@@ -469,31 +470,6 @@ with tab1:
     st.caption("These are songs we think you may like based on your filters, but they are missing note and/or runtime data.")
 
     missing_candidates = base_filtered[missing_note_or_runtime(base_filtered)].copy()
-    if use_similarity and reference_song and not missing_candidates.empty:
-        try:
-            similarity_features = [
-                "VocalRange",
-                "Class",
-                "Language",
-                "Genre",
-                "Era",
-            ]
-            missing_feat_matrix = build_feature_matrix(df, similarity_features)
-            ref_index = df.index[df['Title'] == reference_song][0]
-            ref_pos = df.index.get_loc(ref_index)
-            similarity = cosine_similarity(
-                missing_feat_matrix,
-                missing_feat_matrix[ref_pos].reshape(1, -1)
-            ).flatten()
-            sim_series = pd.Series(similarity, index=df.index)
-            missing_candidates['SimilarityScore'] = sim_series.reindex(missing_candidates.index)
-            missing_candidates = missing_candidates.sort_values(
-                by="SimilarityScore",
-                ascending=False,
-                na_position="last",
-            )
-        except Exception as e:
-            st.error(f"Missing-data similarity error: {e}")
 
     missing_display = missing_candidates.copy()
     missing_display['Note Range'] = missing_display.apply(
