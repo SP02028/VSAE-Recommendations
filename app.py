@@ -13,9 +13,10 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import os
+import re
 
 from vsae_data import load_and_engineer, build_feature_matrix, RANGE_MIDI_DEFAULTS
-from sklearn.metrics.pairwise import cosine_similarity
+from vsae_contentbased import get_recommendations
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -161,13 +162,36 @@ def vocal_range_bounds(vocal_range: str) -> tuple[int, int] | None:
     return bounds['low'], bounds['high']
 
 
-def note_range_label(row: pd.Series) -> str:
+MALE_RANGES = {"tenor", "baritone", "bass"}
+
+
+def should_transpose_for_men(selected_ranges: list[str]) -> bool:
+    return len(selected_ranges) == 1 and selected_ranges[0].casefold() in MALE_RANGES
+
+
+def transpose_note_label(note_str: str, octave_shift: int) -> str:
+    if not isinstance(note_str, str) or octave_shift == 0:
+        return str(note_str).strip()
+
+    cleaned = note_str.strip()
+    match = re.match(r'^([A-Ga-g][b#]?)(\d+)$', cleaned)
+    if not match:
+        return cleaned
+
+    pitch, octave = match.group(1), int(match.group(2))
+    pitch = pitch[0].upper() + pitch[1:].lower() if len(pitch) > 1 else pitch.upper()
+    return f"{pitch}{octave + octave_shift}"
+
+
+def note_range_label(row: pd.Series, transpose_vocal_all: bool = False) -> str:
     lowest_val = row.get('Lowest Note', None)
     highest_val = row.get('Highest Note', None)
     if pd.isna(lowest_val) or pd.isna(highest_val):
         return "Missing"
-    lowest = str(lowest_val).strip()
-    highest = str(highest_val).strip()
+    is_vocal_all = str(row.get('VocalRange', '')).strip() == 'Vocal All'
+    octave_shift = -1 if transpose_vocal_all and is_vocal_all else 0
+    lowest = transpose_note_label(str(lowest_val).strip(), octave_shift)
+    highest = transpose_note_label(str(highest_val).strip(), octave_shift)
     if lowest.upper() in {"N/A", "", "NAN"} or highest.upper() in {"N/A", "", "NAN"}:
         return "Missing"
     return f"{lowest} - {highest}"
@@ -210,11 +234,8 @@ with tab1:
 
     col1, col2, col3 = st.columns(3)
     with col1:
-        range_options = ["All"] + sorted(df['VocalRange'].dropna().unique().tolist())
-        vocal_range = st.selectbox("Vocal Range", range_options, index=0)
-        normalized_exact_range = None
-        if vocal_range != "All":
-            normalized_exact_range = normalize_vocal_range(vocal_range)
+        range_options = sorted(df['VocalRange'].dropna().unique().tolist())
+        selected_ranges = st.multiselect("Vocal Range", range_options, default=range_options)
 
     with col2:
         class_options = sorted(df['Class'].dropna().unique().tolist())
@@ -225,79 +246,144 @@ with tab1:
         )
 
     with col3:
-        lang_options = sorted(df['Language'].dropna().unique().tolist())
+        lang_options = ["English", "French", "German", "Spanish", "Latin", "Italian"]
         selected_lang = st.multiselect("Language", lang_options, default=lang_options)
 
     # Base filter set
     filtered = df.copy()
-    if normalized_exact_range:
-        bounds = vocal_range_bounds(normalized_exact_range)
-        selected_range = filtered[filtered['VocalRange'] == normalized_exact_range]
-        vocal_all = filtered[filtered['VocalRange'] == 'Vocal All']
+    transpose_for_men = should_transpose_for_men(selected_ranges)
+    if selected_ranges:
+        filtered = filtered[filtered['VocalRange'].isin(selected_ranges)]
+
+    if len(selected_ranges) == 1:
+        selected_range = selected_ranges[0]
+        bounds = vocal_range_bounds(selected_range)
         if bounds:
             low_bound, high_bound = bounds
-            note_mask = valid_note_rows(selected_range)
-            selected_range = selected_range[note_mask]
-            selected_range = selected_range[
-                (selected_range['LowestNote_MIDI'] <= high_bound) &
-                (selected_range['HighestNote_MIDI'] >= low_bound)
-            ]
-        filtered = pd.concat([selected_range, vocal_all], ignore_index=True)
+            note_mask = valid_note_rows(filtered)
+            filtered = filtered[note_mask]
+            low_midi = filtered['LowestNote_MIDI']
+            high_midi = filtered['HighestNote_MIDI']
+            if transpose_for_men:
+                vocal_all_mask = filtered['VocalRange'] == 'Vocal All'
+                low_midi = low_midi.where(~vocal_all_mask, low_midi - 12)
+                high_midi = high_midi.where(~vocal_all_mask, high_midi - 12)
+            filtered = filtered[(low_midi <= high_bound) & (high_midi >= low_bound)]
+        else:
+            st.warning("That vocal range is not mapped in the dataset yet.")
 
     if selected_class:
         filtered = filtered[filtered['Class'].isin(selected_class)]
 
     if selected_lang:
-        filtered = filtered[filtered['Language'].isin(selected_lang)]
+        lang_casefold = filtered['Language'].fillna('').astype(str).str.strip().str.casefold()
+        selected_lang_casefold = [lang.casefold() for lang in selected_lang]
+        filtered = filtered[lang_casefold.isin(selected_lang_casefold)]
 
     base_filtered = filtered.copy()
 
     st.divider()
 
-    st.subheader("🎵 Find Similar Songs (Optional)")
-    use_similarity = st.checkbox("Filter by similarity to a reference song")
+    st.subheader("Content-Based Song Recommendation")
+    st.markdown(
+        "Pick a reference song and the features you care about. "
+        "Results are ranked with Personalized PageRank."
+    )
 
-    similarity_threshold = None
-    reference_song = None
-    if use_similarity:
-        song_list = sorted(df['Title'].dropna().unique().tolist())
+    col_left, col_right = st.columns([1, 2])
+
+    with col_left:
+        st.markdown("#### 🎵 Query Song")
+        rec_df = filtered.copy()
+        song_list = sorted(rec_df['Title'].dropna().unique().tolist())
         if not song_list:
-            st.warning("No songs are available for similarity filtering.")
+            st.warning("No songs are available for the current filters.")
+            selected_song = None
         else:
-            reference_song = st.selectbox("Reference song", song_list)
-            similarity_threshold = st.slider(
-                f"How similar to '{reference_song}'?",
-                0.0,
-                1.0,
-                0.5,
-                0.01,
-                help="0 = very different, 1 = very similar",
-            )
+            selected_song = st.selectbox("Select a song", song_list)
 
-    if use_similarity and reference_song and similarity_threshold is not None:
-        try:
-            feature_keys = [
-                "VocalRange",
-                "Class",
-                "Language",
-                "Genre",
-                "Era",
-                "RangeSpan",
-                "Runtime",
-            ]
-            full_feat_matrix = build_feature_matrix(df, feature_keys)
-            ref_index = df.index[df['Title'] == reference_song][0]
-            ref_pos = df.index.get_loc(ref_index)
-            similarity = cosine_similarity(
-                full_feat_matrix,
-                full_feat_matrix[ref_pos].reshape(1, -1)
-            ).flatten()
-            sim_series = pd.Series(similarity, index=df.index)
-            filtered = filtered.copy()
-            filtered['SimilarityScore'] = sim_series.reindex(filtered.index)
-            filtered = filtered[filtered['SimilarityScore'] >= similarity_threshold]
-        except Exception as e:
-            st.error(f"Similarity filter error: {e}")
+        st.markdown("#### 🎛️ Features")
+        use_vocalrange = st.checkbox("Vocal Range",  value=True)
+        use_class      = st.checkbox("Difficulty (Class)", value=True)
+        use_language   = st.checkbox("Language",     value=True)
+        use_genre      = st.checkbox("Genre",        value=True)
+        use_era        = st.checkbox("Era / Time Period", value=False)
+        use_rangespan  = st.checkbox("Note Range Span (Energy proxy)", value=False)
+        use_runtime    = st.checkbox("Runtime (Danceability proxy)", value=False)
+
+        st.markdown("#### 🔄 Repertoire Mode")
+        repertoire_mode = st.radio(
+            "Recommend songs that are:",
+            options=["similar", "different"],
+            index=0,
+        )
+
+        top_n = st.slider("Top N recommendations", 1, 20, 5)
+        exclude_transpositions = st.checkbox("Exclude other keys of the same piece", value=True)
+
+        run_btn = st.button("🔍 Get Recommendations", type="primary")
+
+    with col_right:
+        if run_btn:
+            if not selected_song:
+                st.warning("No song is available for the current filters.")
+            else:
+                selected_features = []
+                if use_vocalrange:  selected_features.append('VocalRange')
+                if use_class:       selected_features.append('Class')
+                if use_language:    selected_features.append('Language')
+                if use_genre:       selected_features.append('Genre')
+                if use_era:         selected_features.append('Era')
+                if use_rangespan:   selected_features.append('RangeSpan')
+                if use_runtime:     selected_features.append('Runtime')
+
+                if not selected_features:
+                    st.warning("Please select at least one feature.")
+                else:
+                    with st.spinner("Running Personalized PageRank on the song graph..."):
+                        try:
+                            feat_matrix = build_feature_matrix(rec_df, selected_features)
+                            results = get_recommendations(
+                                df=rec_df,
+                                feature_matrix=feat_matrix,
+                                song_title=selected_song,
+                                top_n=top_n,
+                                repertoire_mode=repertoire_mode,
+                                exclude_same_base=exclude_transpositions,
+                            )
+
+                            mode_label = "most similar to" if repertoire_mode == "similar" else "most different from"
+                            st.success(
+                                f"Top {top_n} songs **{mode_label}** "
+                                f"*{selected_song}* based on: {', '.join(selected_features)}"
+                            )
+
+                            query_row = rec_df[rec_df['Title'] == selected_song].iloc[0]
+                            with st.expander("ℹ️ Selected song details", expanded=True):
+                                info_cols = st.columns(4)
+                                info_cols[0].metric("Composer", str(query_row.get('Composer', '—')))
+                                info_cols[1].metric("Vocal Range", str(query_row.get('VocalRange', '—')))
+                                info_cols[2].metric("Class", str(query_row.get('Class', '—')))
+                                info_cols[3].metric("Language", str(query_row.get('Language', '—')))
+                                st.metric(
+                                    "Note Range",
+                                    note_range_label(query_row, transpose_vocal_all=transpose_for_men),
+                                )
+
+                            st.markdown("#### Recommendations")
+                            display = results.copy()
+                            display['Note Range'] = display.apply(
+                                lambda row: note_range_label(
+                                    row,
+                                    transpose_vocal_all=transpose_for_men,
+                                ),
+                                axis=1,
+                            )
+                            display['Score'] = display['Score'].round(3)
+                            st.dataframe(display, use_container_width=True)
+
+                        except Exception as e:
+                            st.error(f"Error: {e}")
 
     st.divider()
 
@@ -325,8 +411,6 @@ with tab1:
 
     display = filtered.copy()
     display = display[~missing_note_or_runtime(display)].copy()
-    if 'SimilarityScore' in display.columns:
-        display = display.drop(columns=['SimilarityScore'])
     if use_range_match:
         display['RangeMatchScore'] = None
         valid_rows = valid_note_rows(display)
@@ -337,6 +421,10 @@ with tab1:
             user_span = max(1, high_bound - low_bound)
             song_low = display['LowestNote_MIDI'].values.astype(float)
             song_high = display['HighestNote_MIDI'].values.astype(float)
+            if transpose_for_men:
+                vocal_all_mask = display['VocalRange'] == 'Vocal All'
+                song_low = np.where(vocal_all_mask, song_low - 12, song_low)
+                song_high = np.where(vocal_all_mask, song_high - 12, song_high)
             overlap_low = np.maximum(song_low, low_bound)
             overlap_high = np.minimum(song_high, high_bound)
             overlap = np.maximum(0, overlap_high - overlap_low)
@@ -354,7 +442,10 @@ with tab1:
     st.divider()
 
     top_k = st.slider("Number of songs to show", 5, 50, 10)
-    display['Note Range'] = display.apply(note_range_label, axis=1)
+    display['Note Range'] = display.apply(
+        lambda row: note_range_label(row, transpose_vocal_all=transpose_for_men),
+        axis=1,
+    )
     display['Runtime'] = display['Runtime of Song']
     display['Runtime'] = display['Runtime'].fillna("Missing")
     display.loc[display['Runtime'].astype(str).str.strip().str.upper().isin(["N/A", "NAN", ""]), 'Runtime'] = "Missing"
@@ -405,7 +496,10 @@ with tab1:
             st.error(f"Missing-data similarity error: {e}")
 
     missing_display = missing_candidates.copy()
-    missing_display['Note Range'] = missing_display.apply(note_range_label, axis=1)
+    missing_display['Note Range'] = missing_display.apply(
+        lambda row: note_range_label(row, transpose_vocal_all=transpose_for_men),
+        axis=1,
+    )
     missing_display['Runtime'] = missing_display['Runtime of Song']
     missing_display['Runtime'] = missing_display['Runtime'].fillna("Missing")
     missing_display.loc[missing_display['Runtime'].astype(str).str.strip().str.upper().isin(["N/A", "NAN", ""]), 'Runtime'] = "Missing"
