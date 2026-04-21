@@ -16,7 +16,7 @@ import os
 import re
 
 from vsae_data import load_and_engineer, build_feature_matrix, RANGE_MIDI_DEFAULTS
-from vsae_contentbased import get_recommendations
+from vsae_contentbased import get_recommendation_scores
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -280,111 +280,71 @@ with tab1:
         selected_lang_casefold = [lang.casefold() for lang in selected_lang]
         filtered = filtered[lang_casefold.isin(selected_lang_casefold)]
 
-    base_filtered = filtered.copy()
-
     st.divider()
 
-    st.subheader("Content-Based Song Recommendation")
-    st.markdown(
-        "Pick a reference song and the features you care about. "
-        "Results are ranked with Personalized PageRank."
-    )
+    st.subheader("🎵 Similarity to Query Song (Optional)")
+    use_similarity_filter = st.checkbox("Filter/sort tables by similarity to a query song")
+    similarity_enabled = False
 
-    col_left, col_right = st.columns([1, 2])
-
-    with col_left:
-        st.markdown("#### 🎵 Query Song")
-        use_query_filters = st.checkbox("Limit query songs to current filters", value=True)
+    if use_similarity_filter:
+    
         rec_df = filtered.copy() if use_query_filters else df.copy()
         song_list = sorted(rec_df['Title'].dropna().unique().tolist())
+
         if not song_list:
-            st.warning("No songs are available for the current filters.")
-            selected_song = None
+            st.warning("No songs are available for similarity scoring.")
         else:
-            selected_song = st.selectbox("Select a song", song_list)
+            selected_song = st.selectbox("Query song", song_list)
 
-        st.markdown("#### 🎛️ Features")
-        use_vocalrange = st.checkbox("Vocal Range",  value=True)
-        use_class      = st.checkbox("Difficulty (Class)", value=True)
-        use_language   = st.checkbox("Language",     value=True)
-        use_genre      = st.checkbox("Genre",        value=True)
-        use_era        = st.checkbox("Era / Time Period", value=False)
-        use_rangespan  = st.checkbox("Note Range Span (Energy proxy)", value=False)
-        use_runtime    = st.checkbox("Runtime (Danceability proxy)", value=False)
+            st.markdown("#### Similarity Features")
+            use_vocalrange = st.checkbox("Vocal Range", value=True)
+            use_class = st.checkbox("Difficulty (Class)", value=True)
+            use_language = st.checkbox("Language", value=True)
+            use_genre = st.checkbox("Genre", value=True)
+            use_era = st.checkbox("Era / Time Period", value=False)
+            use_rangespan = st.checkbox("Note Range Span", value=False)
+            use_runtime = st.checkbox("Runtime", value=False)
 
-        st.markdown("#### 🔄 Repertoire Mode")
-        repertoire_mode = st.radio(
-            "Recommend songs that are:",
-            options=["similar", "different"],
-            index=0,
-        )
+            repertoire_mode = st.radio(
+                "Similarity mode",
+                options=["similar", "different"],
+                index=0,
+                help="'Different' surfaces songs that contrast with the query song.",
+            )
+            exclude_transpositions = st.checkbox("Exclude other keys of the same piece", value=True)
+            similarity_min = st.slider("Minimum similarity score", 0.0, 1.0, 0.0, 0.01)
 
-        top_n = st.slider("Top N recommendations", 1, 20, 5)
-        exclude_transpositions = st.checkbox("Exclude other keys of the same piece", value=True)
+            selected_features = []
+            if use_vocalrange: selected_features.append('VocalRange')
+            if use_class: selected_features.append('Class')
+            if use_language: selected_features.append('Language')
+            if use_genre: selected_features.append('Genre')
+            if use_era: selected_features.append('Era')
+            if use_rangespan: selected_features.append('RangeSpan')
+            if use_runtime: selected_features.append('Runtime')
 
-        run_btn = st.button("🔍 Get Recommendations", type="primary")
-
-    with col_right:
-        if run_btn:
-            if not selected_song:
-                st.warning("No song is available for the current filters.")
+            if not selected_features:
+                st.warning("Pick at least one similarity feature.")
             else:
-                selected_features = []
-                if use_vocalrange:  selected_features.append('VocalRange')
-                if use_class:       selected_features.append('Class')
-                if use_language:    selected_features.append('Language')
-                if use_genre:       selected_features.append('Genre')
-                if use_era:         selected_features.append('Era')
-                if use_rangespan:   selected_features.append('RangeSpan')
-                if use_runtime:     selected_features.append('Runtime')
+                try:
+                    feat_matrix = build_feature_matrix(rec_df, selected_features)
+                    similarity_series = get_recommendation_scores(
+                        df=rec_df,
+                        feature_matrix=feat_matrix,
+                        song_title=selected_song,
+                        repertoire_mode=repertoire_mode,
+                        exclude_same_base=exclude_transpositions,
+                    )
 
-                if not selected_features:
-                    st.warning("Please select at least one feature.")
-                else:
-                    with st.spinner("Running Personalized PageRank on the song graph..."):
-                        try:
-                            feat_matrix = build_feature_matrix(rec_df, selected_features)
-                            results = get_recommendations(
-                                df=rec_df,
-                                feature_matrix=feat_matrix,
-                                song_title=selected_song,
-                                top_n=top_n,
-                                repertoire_mode=repertoire_mode,
-                                exclude_same_base=exclude_transpositions,
-                            )
+                    filtered = filtered.copy()
+                    filtered['SimilarityScore'] = similarity_series.reindex(filtered.index)
+                    filtered = filtered[filtered['SimilarityScore'].notna()]
+                    filtered = filtered[filtered['SimilarityScore'] >= similarity_min]
+                    similarity_enabled = True
+                except Exception as e:
+                    st.error(f"Similarity scoring error: {e}")
 
-                            mode_label = "most similar to" if repertoire_mode == "similar" else "most different from"
-                            st.success(
-                                f"Top {top_n} songs **{mode_label}** "
-                                f"*{selected_song}* based on: {', '.join(selected_features)}"
-                            )
-
-                            query_row = rec_df[rec_df['Title'] == selected_song].iloc[0]
-                            with st.expander("ℹ️ Selected song details", expanded=True):
-                                info_cols = st.columns(4)
-                                info_cols[0].metric("Composer", str(query_row.get('Composer', '—')))
-                                info_cols[1].metric("Vocal Range", str(query_row.get('VocalRange', '—')))
-                                info_cols[2].metric("Class", str(query_row.get('Class', '—')))
-                                info_cols[3].metric("Language", str(query_row.get('Language', '—')))
-                                st.metric(
-                                    "Note Range",
-                                    note_range_label(query_row, transpose_vocal_all=transpose_for_men),
-                                )
-
-                            st.markdown("#### Recommendations")
-                            display = results.copy()
-                            display['Note Range'] = display.apply(
-                                lambda row: note_range_label(
-                                    row,
-                                    transpose_vocal_all=transpose_for_men,
-                                ),
-                                axis=1,
-                            )
-                            display['Score'] = display['Score'].round(3)
-                            st.dataframe(display, use_container_width=True)
-
-                        except Exception as e:
-                            st.error(f"Error: {e}")
+    base_filtered = filtered.copy()
 
     st.divider()
 
@@ -436,9 +396,14 @@ with tab1:
         else:
             st.caption("Enter both notes to score range matches.")
 
-        display = display.sort_values(by="RangeMatchScore", ascending=False, na_position="last")
+        sort_cols = ["RangeMatchScore"]
+        if similarity_enabled and 'SimilarityScore' in display.columns:
+            sort_cols.append("SimilarityScore")
+        display = display.sort_values(by=sort_cols, ascending=False, na_position="last")
     else:
         display['RangeMatchScore'] = None
+        if similarity_enabled and 'SimilarityScore' in display.columns:
+            display = display.sort_values(by="SimilarityScore", ascending=False, na_position="last")
 
     st.divider()
 
@@ -470,6 +435,12 @@ with tab1:
     st.caption("These are songs we think you may like based on your filters, but they are missing note and/or runtime data.")
 
     missing_candidates = base_filtered[missing_note_or_runtime(base_filtered)].copy()
+    if similarity_enabled and 'SimilarityScore' in missing_candidates.columns:
+        missing_candidates = missing_candidates.sort_values(
+            by="SimilarityScore",
+            ascending=False,
+            na_position="last",
+        )
 
     missing_display = missing_candidates.copy()
     missing_display['Note Range'] = missing_display.apply(

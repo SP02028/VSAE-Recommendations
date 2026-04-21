@@ -14,6 +14,78 @@ from sklearn.metrics.pairwise import cosine_similarity
 import re
 
 
+def _compute_pagerank_scores(
+    feature_matrix: np.ndarray,
+    query_idx: int,
+    repertoire_mode: str,
+) -> np.ndarray:
+    sim_matrix = cosine_similarity(feature_matrix)
+    np.fill_diagonal(sim_matrix, 0.0)
+
+    n = sim_matrix.shape[0]
+    k = min(12, max(3, n // 10))
+    pruned = np.zeros_like(sim_matrix)
+    if n > 1:
+        for i in range(n):
+            row = sim_matrix[i]
+            top_idx = np.argsort(row)[-k:]
+            pruned[i, top_idx] = np.clip(row[top_idx], 0.0, None)
+
+    row_sums = pruned.sum(axis=1, keepdims=True)
+    transition = np.divide(
+        pruned,
+        np.where(row_sums == 0, 1.0, row_sums),
+        where=True,
+    )
+
+    alpha = 0.85
+    teleport = np.zeros(n)
+    teleport[query_idx] = 1.0
+    rank = teleport.copy()
+    for _ in range(100):
+        next_rank = alpha * (transition.T @ rank) + (1.0 - alpha) * teleport
+        if np.linalg.norm(next_rank - rank, ord=1) < 1e-10:
+            rank = next_rank
+            break
+        rank = next_rank
+
+    if repertoire_mode == 'different':
+        return 1.0 - rank
+    return rank
+
+
+def get_recommendation_scores(
+    df: pd.DataFrame,
+    feature_matrix: np.ndarray,
+    song_title: str,
+    repertoire_mode: str = 'similar',
+    exclude_same_base: bool = True,
+) -> pd.Series:
+    """Return PageRank-based scores for all songs indexed by df.index."""
+    matches = df[df['Title'] == song_title]
+    if matches.empty:
+        raise ValueError(f"Song '{song_title}' not found in dataset.")
+
+    query_idx = matches.index[0]
+    query_pos = df.index.get_loc(query_idx)
+    scores = _compute_pagerank_scores(feature_matrix, query_pos, repertoire_mode)
+
+    score_series = pd.Series(scores, index=df.index, dtype=float)
+    score_series.loc[query_idx] = np.nan
+
+    if exclude_same_base:
+        base = re.sub(
+            r'\s*\((High|Low|Medium|Vocal All|Bass|Baritone|Soprano|Alto|Tenor|Mezzo Soprano)[^)]*\)\s*$',
+            '',
+            song_title,
+            flags=re.IGNORECASE,
+        ).strip()
+        base_mask = df['Title'].fillna('').astype(str).str.startswith(base)
+        score_series.loc[base_mask] = np.nan
+
+    return score_series
+
+
 def get_recommendations(
     df: pd.DataFrame,
     feature_matrix: np.ndarray,
@@ -41,65 +113,17 @@ def get_recommendations(
     DataFrame with columns: Title, Composer, VocalRange, Class, Language,
                              Genre, Era, RangeSpan, RuntimeSeconds, Score
     """
-    # ── Find query row ────────────────────────────────────────────────────────
-    matches = df[df['Title'] == song_title]
-    if matches.empty:
-        raise ValueError(f"Song '{song_title}' not found in dataset.")
-
-    query_idx = matches.index[0]
-    query_vec = feature_matrix[query_idx].reshape(1, -1)
-
-    # ── Build weighted graph from cosine similarities ─────────────────────────
-    sim_matrix = cosine_similarity(feature_matrix)
-    np.fill_diagonal(sim_matrix, 0.0)
-
-    # Keep only top-k outbound edges per node to reduce noise in the graph.
-    n = sim_matrix.shape[0]
-    k = min(12, max(3, n // 10))
-    pruned = np.zeros_like(sim_matrix)
-    if n > 1:
-        for i in range(n):
-            row = sim_matrix[i]
-            top_idx = np.argsort(row)[-k:]
-            pruned[i, top_idx] = np.clip(row[top_idx], 0.0, None)
-
-    # Row-normalize to transition probabilities.
-    row_sums = pruned.sum(axis=1, keepdims=True)
-    transition = np.divide(
-        pruned,
-        np.where(row_sums == 0, 1.0, row_sums),
-        where=True,
+    score_series = get_recommendation_scores(
+        df=df,
+        feature_matrix=feature_matrix,
+        song_title=song_title,
+        repertoire_mode=repertoire_mode,
+        exclude_same_base=exclude_same_base,
     )
 
-    # Personalized PageRank centered on the selected song.
-    alpha = 0.85
-    teleport = np.zeros(n)
-    teleport[query_idx] = 1.0
-    rank = teleport.copy()
-    for _ in range(100):
-        next_rank = alpha * (transition.T @ rank) + (1.0 - alpha) * teleport
-        if np.linalg.norm(next_rank - rank, ord=1) < 1e-10:
-            rank = next_rank
-            break
-        rank = next_rank
-
-    scores = rank
-
-    if repertoire_mode == 'different':
-        scores = 1.0 - scores
-
-    # ── Build result DataFrame ────────────────────────────────────────────────
     results = df.copy()
-    results['Score'] = scores
-
-    # Always exclude the query song itself
-    results = results[results.index != query_idx]
-
-    # Optionally exclude other transpositions of the same piece
-    if exclude_same_base:
-        base = re.sub(r'\s*\((High|Low|Medium|Vocal All|Bass|Baritone|Soprano|Alto|Tenor|Mezzo Soprano)[^)]*\)\s*$',
-                      '', song_title, flags=re.IGNORECASE).strip()
-        results = results[~results['Title'].str.startswith(base)]
+    results['Score'] = score_series
+    results = results[results['Score'].notna()]
 
     # Sort (highest score first)
     results = results.sort_values('Score', ascending=False)
