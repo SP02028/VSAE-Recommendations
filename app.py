@@ -288,7 +288,7 @@ with tab1:
 
     if use_similarity_filter:
     
-        rec_df = filtered.copy() if use_query_filters else df.copy()
+        rec_df = filtered.copy() 
         song_list = sorted(rec_df['Title'].dropna().unique().tolist())
 
         if not song_list:
