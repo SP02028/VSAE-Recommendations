@@ -58,15 +58,20 @@ def get_recommendation_scores(
     df: pd.DataFrame,
     feature_matrix: np.ndarray,
     song_title: str,
+    query_index: int | None = None,
     repertoire_mode: str = 'similar',
     exclude_same_base: bool = True,
 ) -> pd.Series:
     """Return PageRank-based scores for all songs indexed by df.index."""
-    matches = df[df['Title'] == song_title]
-    if matches.empty:
-        raise ValueError(f"Song '{song_title}' not found in dataset.")
-
-    query_idx = matches.index[0]
+    if query_index is not None:
+        if query_index not in df.index:
+            raise ValueError(f"Query index '{query_index}' not found in dataset.")
+        query_idx = query_index
+    else:
+        matches = df[df['Title'] == song_title]
+        if matches.empty:
+            raise ValueError(f"Song '{song_title}' not found in dataset.")
+        query_idx = matches.index[0]
     query_pos = df.index.get_loc(query_idx)
     scores = _compute_pagerank_scores(feature_matrix, query_pos, repertoire_mode)
 
