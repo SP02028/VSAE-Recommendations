@@ -341,7 +341,6 @@ with tab1:
                         df=rec_df,
                         feature_matrix=feat_matrix,
                         song_title=selected_song,
-                        query_index=selected_query_idx,
                         repertoire_mode='similar',
                         exclude_same_base=exclude_transpositions,
                     )
