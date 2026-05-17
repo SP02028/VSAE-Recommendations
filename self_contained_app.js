@@ -47,7 +47,10 @@ function loadVSAEData(csvText) {
 
   const headers = rows[0].map((h, idx) => {
     const trimmed = String(h == null ? "" : h).trim();
-    return idx === 0 ? trimmed.replace(/^\uFEFF/, "") : trimmed;
+    if (idx === 0) {
+      return trimmed.replace(/^\uFEFF/, "");
+    }
+    return trimmed || `__extra_col_${idx + 1}`;
   });
 
   const titleIndex = headers.findIndex((h) => h.toLowerCase() === "title");
@@ -180,6 +183,10 @@ const RANGE_MIDI_BOUNDS = {
 
 const MALE_RANGES = ["tenor", "baritone", "bass"];
 
+const VOICE_PART_OPTIONS = ["Soprano", "Mezzo Soprano", "Alto", "Tenor", "Baritone", "Bass"];
+
+const LANGUAGE_OPTIONS = ["English", "Italian", "French", "German", "Spanish", "Latin"];
+
 const CLASS_ORDINAL_MAP = { A: 1, B: 2, C: 3 };
 
 const ERA_ORDINAL_MAP = {
@@ -258,6 +265,10 @@ function engineerFeatures(songs) {
     const song = songs[i];
     if (!song || typeof song !== "object") {
       continue;
+    }
+
+    if (!song.Song_Code) {
+      song.Song_Code = String(i + 1);
     }
 
     const era = inferEra(song["Time Period"]);
@@ -625,15 +636,17 @@ function filterSongs(songs, filters) {
 
   if (vocalRanges.length > 0) {
     const vocalSet = new Set(vocalRanges);
-    filtered = filtered.filter((song) => vocalSet.has(song && song.VocalRange));
+    filtered = filtered.filter((song) => {
+      const songRange = song && typeof song.VocalRange === "string" ? song.VocalRange : "";
+      return vocalSet.has(songRange) || songRange === "Vocal All";
+    });
   }
 
   if (vocalRanges.length === 1) {
     const selectedRange = vocalRanges[0];
     const bounds = RANGE_MIDI_BOUNDS[selectedRange];
     if (bounds) {
-      const selectedLower = String(selectedRange).trim().toLowerCase();
-      const transposeForMen = MALE_RANGES.includes(selectedLower);
+      const transposeForMen = vocalRanges.some((range) => MALE_RANGES.includes(String(range).trim().toLowerCase()));
 
       filtered = filtered.filter((song) => {
         const lowestRaw = Number(song && song.LowestNote_MIDI);
@@ -661,9 +674,9 @@ function filterSongs(songs, filters) {
   }
 
   if (languages.length > 0) {
-    const languageSet = new Set(languages.map((lang) => String(lang).trim().toLowerCase()));
+    const languageSet = new Set(languages.map((lang) => normalizeLanguageValue(lang)));
     filtered = filtered.filter((song) => {
-      const songLang = song && song.Language != null ? String(song.Language).trim().toLowerCase() : "";
+      const songLang = normalizeLanguageValue(song && song.Language != null ? song.Language : "");
       return languageSet.has(songLang);
     });
   }
@@ -741,6 +754,37 @@ function scoreRangeMatch(songs, userLowMidi, userHighMidi, isMaleRange) {
   }
 
   return songs;
+}
+
+function hasMissingData(song) {
+  if (!song || typeof song !== "object") {
+    return true;
+  }
+
+  const lowestRaw = String(song["Lowest Note"] == null ? "" : song["Lowest Note"]).trim();
+  const highestRaw = String(song["Highest Note"] == null ? "" : song["Highest Note"]).trim();
+  const runtimeRaw = String(song["Runtime of Song"] == null ? "" : song["Runtime of Song"]).trim();
+
+  const missingNote = !lowestRaw || !highestRaw || lowestRaw.toUpperCase() === "N/A" || highestRaw.toUpperCase() === "N/A";
+  const missingRuntime = !runtimeRaw || runtimeRaw.toUpperCase() === "N/A";
+
+  if (missingNote || missingRuntime) {
+    return true;
+  }
+
+  for (const key of Object.keys(song)) {
+    if (key.startsWith("__extra_col_")) {
+      const value = String(song[key] == null ? "" : song[key]).trim().toLowerCase();
+      if (value && value !== "no music" && value !== "no tracks or music for this key" && value !== "no music for this key") {
+        return true;
+      }
+      if (value) {
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 function escapeHtml(value) {
@@ -872,6 +916,72 @@ function renderSongTable(songs, containerId, options) {
   container.innerHTML = html;
 }
 
+function buildSongDisplayLabel(song) {
+  if (!song || typeof song !== "object") {
+    return "";
+  }
+  const title = String(song.Title || "");
+  const vocalRange = String(song.VocalRange || "");
+  const cls = String(song.Class || "");
+  const language = normalizeLanguageValue(song.Language);
+  return `${title} | ${vocalRange} | Class ${cls} | ${language}`;
+}
+
+function resolveReferenceSong(referenceText, referenceItems, songCodeToIndex) {
+  const raw = String(referenceText == null ? "" : referenceText).trim();
+  if (!raw) {
+    return null;
+  }
+
+  if (songCodeToIndex && songCodeToIndex.has(raw)) {
+    return { code: raw, index: songCodeToIndex.get(raw) };
+  }
+
+  const lower = raw.toLowerCase();
+  const exact = referenceItems.find((item) => item.label.toLowerCase() === lower);
+  if (exact) {
+    return exact;
+  }
+
+  const startsWith = referenceItems.find((item) => item.label.toLowerCase().startsWith(lower));
+  if (startsWith) {
+    return startsWith;
+  }
+
+  const includes = referenceItems.find((item) => item.label.toLowerCase().includes(lower));
+  if (includes) {
+    return includes;
+  }
+
+  return null;
+}
+
+function filterReferenceItems(query, referenceItems) {
+  const needle = String(query == null ? "" : query).trim().toLowerCase();
+  if (!needle) {
+    return referenceItems;
+  }
+
+  return referenceItems.filter((item) => item.label.toLowerCase().includes(needle));
+}
+
+function normalizeLanguageValue(value) {
+  const raw = String(value == null ? "" : value).trim();
+  if (!raw) {
+    return "";
+  }
+
+  const cleaned = raw.replace(/[?]+$/g, "").trim();
+  const lower = cleaned.toLowerCase();
+  for (let i = 0; i < LANGUAGE_OPTIONS.length; i += 1) {
+    if (lower === LANGUAGE_OPTIONS[i].toLowerCase()) {
+      return LANGUAGE_OPTIONS[i];
+    }
+  }
+
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1).toLowerCase();
+}
+
 function readQueryParams() {
   if (typeof window === "undefined" || !window.location) {
     return { studentId: null, prevSongCode: null };
@@ -922,6 +1032,58 @@ function setSelectOptions(selectEl, values) {
   }
 }
 
+function setSingleSelectOptions(selectEl, values, defaultIndex = 0) {
+  if (!selectEl) {
+    return;
+  }
+
+  selectEl.innerHTML = "";
+  for (let i = 0; i < values.length; i += 1) {
+    const option = document.createElement("option");
+    option.value = values[i];
+    option.textContent = values[i];
+    option.selected = i === defaultIndex;
+    selectEl.appendChild(option);
+  }
+  if (values.length > 0) {
+    selectEl.value = values[Math.min(defaultIndex, values.length - 1)];
+  }
+}
+
+function setTab(tabId) {
+  const panes = document.querySelectorAll(".tab-pane");
+  const buttons = document.querySelectorAll(".tab-btn");
+  for (let i = 0; i < panes.length; i += 1) {
+    panes[i].classList.toggle("active", panes[i].id === tabId);
+  }
+  for (let i = 0; i < buttons.length; i += 1) {
+    buttons[i].classList.toggle("active", buttons[i].dataset.tab === tabId);
+  }
+}
+
+function renderSimpleBarList(containerId, counts) {
+  const container = document.getElementById(containerId);
+  if (!container) {
+    return;
+  }
+
+  const entries = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
+  const maxCount = entries.length ? Math.max(...entries.map(([, count]) => count)) : 1;
+  container.innerHTML = entries
+    .map(([label, count]) => {
+      const width = Math.max(6, Math.round((count / maxCount) * 100));
+      return `
+        <div style="display:flex;align-items:center;gap:10px;margin:6px 0;">
+          <div style="min-width:140px;color:var(--text-main);font-size:.82rem;">${escapeHtml(label)}</div>
+          <div style="flex:1;height:14px;background:rgba(255,255,255,.08);border-radius:999px;overflow:hidden;">
+            <div style="height:100%;width:${width}%;background:var(--accent);"></div>
+          </div>
+          <div style="min-width:32px;text-align:right;font-family:monospace;color:var(--text-main);">${count}</div>
+        </div>`;
+    })
+    .join("");
+}
+
 async function init() {
   if (typeof document === "undefined") {
     return;
@@ -937,10 +1099,12 @@ async function init() {
   const lowNoteInput = document.getElementById("input-low-note");
   const highNoteInput = document.getElementById("input-high-note");
   const toggleSimilarity = document.getElementById("toggle-similarity");
-  const referenceSelect = document.getElementById("select-reference");
+  const referenceInput = document.getElementById("select-reference");
+  const referenceSuggestions = document.getElementById("reference-suggestions");
   const excludeTranspositions = document.getElementById("exclude-transpositions");
   const topKSlider = document.getElementById("slider-topk");
   const resultsContainer = document.getElementById("results-table");
+  const missingResultsContainer = document.getElementById("missing-results-table");
   const submitButton = document.getElementById("btn-submit");
 
   const featureCheckboxes = [
@@ -953,6 +1117,10 @@ async function init() {
     { id: "feature-runtime", name: "Runtime" },
   ];
 
+  const songCodeToIndex = new Map();
+  const referenceItems = [];
+  let suggestionTimeout = null;
+
   try {
     const resp = await fetch("VSAE_Data_Final.csv");
     if (!resp.ok) {
@@ -960,58 +1128,180 @@ async function init() {
     }
     const csvText = await resp.text();
     allSongs = engineerFeatures(loadVSAEData(csvText));
+    songCodeToIndex.clear();
+    referenceItems.length = 0;
+    for (let i = 0; i < allSongs.length; i += 1) {
+      const code = allSongs[i] && allSongs[i].Song_Code != null ? String(allSongs[i].Song_Code) : String(i + 1);
+      songCodeToIndex.set(code, i);
+      referenceItems.push({
+        code,
+        index: i,
+        label: buildSongDisplayLabel(allSongs[i]),
+      });
+    }
   } catch (err) {
+    const loadingEl = document.getElementById("loading");
+    const appEl = document.getElementById("app");
+    const errorBox = document.getElementById("error-box");
+    if (loadingEl) {
+      loadingEl.style.display = "none";
+    }
+    if (appEl) {
+      appEl.style.display = "none";
+    }
+    if (errorBox) {
+      errorBox.style.display = "block";
+      errorBox.textContent = `Could not load data: ${err.message}`;
+    }
     if (resultsContainer) {
       resultsContainer.textContent = `Could not load data: ${err.message}`;
     }
     return;
   }
 
-  const uniqueSorted = (arr) => Array.from(new Set(arr.filter((v) => String(v || "").trim() !== ""))).sort();
-  setSelectOptions(vocalSelect, uniqueSorted(allSongs.map((s) => s.VocalRange)));
-  setSelectOptions(classSelect, uniqueSorted(allSongs.map((s) => s.Class)));
-  setSelectOptions(langSelect, uniqueSorted(allSongs.map((s) => s.Language)));
+  const loadingEl = document.getElementById("loading");
+  const appEl = document.getElementById("app");
+  if (loadingEl) {
+    loadingEl.style.display = "none";
+  }
+  if (appEl) {
+    appEl.style.display = "block";
+  }
 
-  if (referenceSelect) {
-    referenceSelect.innerHTML = "";
-    const withLabels = allSongs.map((song, idx) => {
-      const title = String(song.Title || "");
-      const vocalRange = String(song.VocalRange || "");
-      const cls = String(song.Class || "");
-      const language = String(song.Language || "");
-      return {
-        idx,
-        label: `${title} | ${vocalRange} | Class ${cls} | ${language}`,
-      };
-    });
-    withLabels.sort((a, b) => a.label.localeCompare(b.label));
-    const emptyOption = document.createElement("option");
-    emptyOption.value = "";
-    emptyOption.textContent = "Select a reference song";
-    referenceSelect.appendChild(emptyOption);
-    for (let i = 0; i < withLabels.length; i += 1) {
-      const option = document.createElement("option");
-      option.value = String(withLabels[i].idx);
-      option.textContent = withLabels[i].label;
-      referenceSelect.appendChild(option);
+  const totalStat = document.getElementById("stat-total");
+  const rangesStat = document.getElementById("stat-ranges");
+  const langsStat = document.getElementById("stat-langs");
+  const composersStat = document.getElementById("stat-composers");
+  if (totalStat) {
+    totalStat.textContent = String(allSongs.length);
+  }
+  if (rangesStat) {
+    rangesStat.textContent = String(new Set(allSongs.map((song) => song.VocalRange)).size);
+  }
+  if (langsStat) {
+    langsStat.textContent = String(
+      new Set(allSongs.map((song) => normalizeLanguageValue(song.Language)).filter(Boolean)).size
+    );
+  }
+  if (composersStat) {
+    composersStat.textContent = String(new Set(allSongs.map((song) => song.Composer)).size);
+  }
+
+  renderSimpleBarList(
+    "overview-vocalrange",
+    new Map(Object.entries(
+      allSongs.reduce((acc, song) => {
+        const key = String(song.VocalRange || "Unknown");
+        acc[key] = (acc[key] || 0) + 1;
+        return acc;
+      }, {})
+    ))
+  );
+  renderSimpleBarList(
+    "overview-class",
+    new Map(Object.entries(
+      allSongs.reduce((acc, song) => {
+        const key = String(song.Class || "Unknown");
+        acc[key] = (acc[key] || 0) + 1;
+        return acc;
+      }, {})
+    ))
+  );
+  renderSimpleBarList(
+    "overview-language",
+    new Map(Object.entries(
+      allSongs.reduce((acc, song) => {
+        const key = normalizeLanguageValue(song.Language) || "Unknown";
+        acc[key] = (acc[key] || 0) + 1;
+        return acc;
+      }, {})
+    ))
+  );
+  renderSimpleBarList(
+    "overview-era",
+    new Map(Object.entries(
+      allSongs.reduce((acc, song) => {
+        const key = String(song.Era || "Unknown");
+        acc[key] = (acc[key] || 0) + 1;
+        return acc;
+      }, {})
+    ))
+  );
+
+  referenceItems.sort((a, b) => a.label.localeCompare(b.label));
+
+  const uniqueSorted = (arr) => Array.from(new Set(arr.filter((v) => String(v || "").trim() !== ""))).sort();
+  setSingleSelectOptions(vocalSelect, VOICE_PART_OPTIONS, 0);
+  setSelectOptions(classSelect, uniqueSorted(allSongs.map((s) => s.Class)));
+  setSelectOptions(langSelect, LANGUAGE_OPTIONS.filter((lang) => allSongs.some((song) => normalizeLanguageValue(song.Language) === lang)));
+
+  if (referenceInput) {
+    if (currentPrevSongCode != null && songCodeToIndex.has(String(currentPrevSongCode))) {
+      const refIdx = songCodeToIndex.get(String(currentPrevSongCode));
+      referenceInput.value = buildSongDisplayLabel(allSongs[refIdx]);
+    } else if (referenceItems.length > 0) {
+      referenceInput.value = referenceItems[0].label;
     }
+  }
+
+  const tabButtons = document.querySelectorAll(".tab-btn");
+  for (let i = 0; i < tabButtons.length; i += 1) {
+    tabButtons[i].addEventListener("click", () => setTab(tabButtons[i].dataset.tab));
+  }
+
+  function hideReferenceSuggestions() {
+    if (referenceSuggestions) {
+      referenceSuggestions.classList.remove("on");
+      referenceSuggestions.innerHTML = "";
+    }
+  }
+
+  function showReferenceSuggestions() {
+    if (!referenceSuggestions || !referenceInput) {
+      return;
+    }
+
+    const matches = filterReferenceItems(referenceInput.value, referenceItems).slice(0, 30);
+    referenceSuggestions.innerHTML = "";
+    if (!matches.length) {
+      hideReferenceSuggestions();
+      return;
+    }
+
+    for (let i = 0; i < matches.length; i += 1) {
+      const item = matches[i];
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "suggestion-item";
+      button.textContent = item.label;
+      button.dataset.code = item.code;
+      button.dataset.label = item.label;
+      button.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        referenceInput.value = item.label;
+        hideReferenceSuggestions();
+        rerunPipeline();
+      });
+      referenceSuggestions.appendChild(button);
+    }
+
+    referenceSuggestions.classList.add("on");
   }
 
   function rerunPipeline() {
     const vocalRanges = getSelectedValues(vocalSelect);
     const classes = getSelectedValues(classSelect);
-    const languages = getSelectedValues(langSelect);
+    const languages = getSelectedValues(langSelect).map((value) => normalizeLanguageValue(value));
 
-    const isMaleRange =
-      vocalRanges.length === 1 && MALE_RANGES.includes(String(vocalRanges[0]).trim().toLowerCase());
+    const isMaleRange = vocalRanges.some((range) => MALE_RANGES.includes(String(range).trim().toLowerCase()));
 
     let working = filterSongs(allSongs, { vocalRanges, classes, languages });
 
     let similarityActive = false;
     const similarityEnabled = Boolean(toggleSimilarity && toggleSimilarity.checked);
-    const referenceValue = referenceSelect ? referenceSelect.value : "";
-    if (similarityEnabled && referenceValue !== "") {
-      const queryAllIndex = Number.parseInt(referenceValue, 10);
+    const referenceMatch = resolveReferenceSong(referenceInput ? referenceInput.value : "", referenceItems, songCodeToIndex);
+    if (similarityEnabled && referenceMatch) {
+      const queryAllIndex = referenceMatch.index;
       const checkedFeatures = [];
       for (let i = 0; i < featureCheckboxes.length; i += 1) {
         const box = document.getElementById(featureCheckboxes[i].id);
@@ -1021,19 +1311,25 @@ async function init() {
       }
 
       if (checkedFeatures.length > 0 && Number.isFinite(queryAllIndex) && queryAllIndex >= 0) {
-        const querySong = allSongs[queryAllIndex];
-        const queryFilteredIndex = working.indexOf(querySong);
-        if (queryFilteredIndex >= 0 && working.length > 0) {
-          const featureMatrix = buildFeatureMatrix(working, checkedFeatures);
-          const ranked = personalizedPageRank(
-            featureMatrix,
-            queryFilteredIndex,
-            working.slice(),
-            Boolean(excludeTranspositions && excludeTranspositions.checked)
-          );
-          working = ranked;
-          similarityActive = true;
+        const featureMatrix = buildFeatureMatrix(allSongs, checkedFeatures);
+        const rankedAllSongs = personalizedPageRank(
+          featureMatrix,
+          queryAllIndex,
+          allSongs.slice(),
+          Boolean(excludeTranspositions && excludeTranspositions.checked)
+        );
+        const pprByCode = new Map();
+        for (let i = 0; i < rankedAllSongs.length; i += 1) {
+          const song = rankedAllSongs[i];
+          const code = song && song.Song_Code != null ? String(song.Song_Code) : String(i + 1);
+          pprByCode.set(code, Number(song.pprScore) || 0);
         }
+        working = working.map((song) => {
+          const code = song && song.Song_Code != null ? String(song.Song_Code) : "";
+          song.pprScore = pprByCode.has(code) ? pprByCode.get(code) : 0;
+          return song;
+        });
+        similarityActive = true;
       }
     }
 
@@ -1044,14 +1340,35 @@ async function init() {
       scoreRangeMatch(working, lowMidi, highMidi, isMaleRange);
     }
 
+    const completeSongs = [];
+    const missingSongs = [];
+    for (let i = 0; i < working.length; i += 1) {
+      const song = working[i];
+      if (hasMissingData(song)) {
+        missingSongs.push(song);
+      } else {
+        completeSongs.push(song);
+      }
+    }
+
     if (rangeActive) {
-      working.sort((a, b) => Number(b.rangeMatchScore || 0) - Number(a.rangeMatchScore || 0));
+      completeSongs.sort((a, b) => Number(b.rangeMatchScore || 0) - Number(a.rangeMatchScore || 0));
+      missingSongs.sort((a, b) => Number(b.rangeMatchScore || 0) - Number(a.rangeMatchScore || 0));
     } else if (similarityActive) {
-      working.sort((a, b) => Number(b.pprScore || 0) - Number(a.pprScore || 0));
+      completeSongs.sort((a, b) => Number(b.pprScore || 0) - Number(a.pprScore || 0));
+      missingSongs.sort((a, b) => Number(b.pprScore || 0) - Number(a.pprScore || 0));
     }
 
     const topKValue = Number.parseInt(topKSlider && topKSlider.value ? topKSlider.value : "10", 10);
-    renderSongTable(working, "results-table", {
+    renderSongTable(completeSongs, "results-table", {
+      topK: Number.isFinite(topKValue) ? topKValue : 10,
+      showSimilarity: similarityActive,
+      showRangeMatch: rangeActive,
+      isMaleRange,
+      selectedSongCode,
+    });
+
+    renderSongTable(missingSongs, "missing-results-table", {
       topK: Number.isFinite(topKValue) ? topKValue : 10,
       showSimilarity: similarityActive,
       showRangeMatch: rangeActive,
@@ -1060,7 +1377,23 @@ async function init() {
     });
 
     if (resultsContainer) {
-      const clickableRows = resultsContainer.querySelectorAll("tbody tr");
+      const completeCountEl = document.getElementById("complete-count");
+      if (completeCountEl) {
+        completeCountEl.textContent = `${completeSongs.length} songs`;
+      }
+    }
+    if (missingResultsContainer) {
+      const missingCountEl = document.getElementById("missing-count");
+      if (missingCountEl) {
+        missingCountEl.textContent = `${missingSongs.length} songs`;
+      }
+    }
+
+    const wireSelection = (container) => {
+      if (!container) {
+        return;
+      }
+      const clickableRows = container.querySelectorAll("tbody tr");
       for (let i = 0; i < clickableRows.length; i += 1) {
         clickableRows[i].addEventListener("click", () => {
           const code = clickableRows[i].getAttribute("data-song-code") || "";
@@ -1068,7 +1401,10 @@ async function init() {
           rerunPipeline();
         });
       }
-    }
+    };
+
+    wireSelection(resultsContainer);
+    wireSelection(missingResultsContainer);
   }
 
   const watchedIds = [
@@ -1096,7 +1432,34 @@ async function init() {
       continue;
     }
     const eventName = el.tagName === "INPUT" && String(el.type).toLowerCase() === "text" ? "input" : "change";
+    if (el === referenceInput) {
+      el.addEventListener("input", () => {
+        showReferenceSuggestions();
+        rerunPipeline();
+      });
+      el.addEventListener("focus", showReferenceSuggestions);
+      el.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          hideReferenceSuggestions();
+        }
+      });
+      el.addEventListener("blur", () => {
+        suggestionTimeout = window.setTimeout(() => {
+          hideReferenceSuggestions();
+        }, 150);
+      });
+      continue;
+    }
     el.addEventListener(eventName, rerunPipeline);
+  }
+
+  if (referenceSuggestions) {
+    referenceSuggestions.addEventListener("pointerdown", () => {
+      if (suggestionTimeout != null) {
+        window.clearTimeout(suggestionTimeout);
+        suggestionTimeout = null;
+      }
+    });
   }
 
   if (submitButton) {
@@ -1108,15 +1471,23 @@ async function init() {
     });
   }
 
-  if (referenceSelect && currentPrevSongCode) {
-    referenceSelect.dataset.prevSongCode = currentPrevSongCode;
+  if (referenceInput && currentPrevSongCode) {
+    referenceInput.dataset.prevSongCode = currentPrevSongCode;
+  }
+
+  if (referenceInput) {
+    showReferenceSuggestions();
   }
 
   rerunPipeline();
 }
 
 if (typeof document !== "undefined") {
-  document.addEventListener("DOMContentLoaded", init);
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
 }
 
 if (typeof module !== "undefined" && module.exports) {
