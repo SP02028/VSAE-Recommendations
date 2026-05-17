@@ -756,7 +756,7 @@ function scoreRangeMatch(songs, userLowMidi, userHighMidi, isMaleRange) {
   return songs;
 }
 
-function hasMissingData(song) {
+function engineer(song) {
   if (!song || typeof song !== "object") {
     return true;
   }
@@ -772,16 +772,9 @@ function hasMissingData(song) {
     return true;
   }
 
-  for (const key of Object.keys(song)) {
-    if (key.startsWith("__extra_col_")) {
-      const value = String(song[key] == null ? "" : song[key]).trim().toLowerCase();
-      if (value && value !== "no music" && value !== "no tracks or music for this key" && value !== "no music for this key") {
-        return true;
-      }
-      if (value) {
-        return true;
-      }
-    }
+  const musicNotes = String(song.Music_Notes == null ? "" : song.Music_Notes).trim().toLowerCase();
+  if (musicNotes && musicNotes !== "n/a") {
+    return true;
   }
 
   return false;
@@ -1344,7 +1337,7 @@ async function init() {
     const missingSongs = [];
     for (let i = 0; i < working.length; i += 1) {
       const song = working[i];
-      if (hasMissingData(song)) {
+      if (Song.Code(song)) {
         missingSongs.push(song);
       } else {
         completeSongs.push(song);
