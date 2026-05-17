@@ -267,10 +267,6 @@ function engineerFeatures(songs) {
       continue;
     }
 
-    if (!song.Song_Code) {
-      song.Song_Code = String(i + 1);
-    }
-
     const era = inferEra(song["Time Period"]);
     song.Era = era;
 
