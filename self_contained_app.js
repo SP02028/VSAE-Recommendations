@@ -752,7 +752,7 @@ function scoreRangeMatch(songs, userLowMidi, userHighMidi, isMaleRange) {
   return songs;
 }
 
-function engineer(song) {
+function hasMissingData(song) {
   if (!song || typeof song !== "object") {
     return true;
   }
@@ -1333,7 +1333,7 @@ async function init() {
     const missingSongs = [];
     for (let i = 0; i < working.length; i += 1) {
       const song = working[i];
-      if (Song.Code(song)) {
+      if (hasMissingData(song)) {
         missingSongs.push(song);
       } else {
         completeSongs.push(song);
@@ -1490,6 +1490,7 @@ if (typeof module !== "undefined" && module.exports) {
     filterSongs,
     parseNoteInput,
     scoreRangeMatch,
+    hasMissingData,
     renderSongTable,
     readQueryParams,
     redirectToAvesChoir,
