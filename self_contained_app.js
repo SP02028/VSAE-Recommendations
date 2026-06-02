@@ -822,6 +822,7 @@ function renderSongTable(songs, containerId, options) {
   const rows = source.slice(0, topK);
 
   const headers = [
+    "",
     "#",
     "Title",
     "Composer",
@@ -867,7 +868,15 @@ function renderSongTable(songs, containerId, options) {
     const runtimeRaw = String(song["Runtime of Song"] == null ? "" : song["Runtime of Song"]).trim();
     const runtime = !runtimeRaw || runtimeRaw.toUpperCase() === "N/A" ? "Missing" : runtimeRaw;
 
+    const songCode = song.Song_Code == null ? "" : String(song.Song_Code);
+    const isSelected = selectedCode != null && songCode === selectedCode;
+
+    const radioHtml = isSelected
+      ? '<span style="display:inline-block;width:18px;height:18px;border-radius:50%;border:2px solid var(--accent, #ff6a5f);background:var(--accent, #ff6a5f);vertical-align:middle;"><span style="display:block;width:8px;height:8px;border-radius:50%;background:#fff;margin:3px auto;"></span></span>'
+      : '<span style="display:inline-block;width:18px;height:18px;border-radius:50%;border:2px solid rgba(255,255,255,0.4);background:transparent;vertical-align:middle;"></span>';
+
     const cells = [
+      radioHtml,
       String(i + 1),
       String(song.Title == null ? "" : song.Title),
       String(song.Composer == null ? "" : song.Composer),
@@ -891,14 +900,15 @@ function renderSongTable(songs, containerId, options) {
     }
 
     const rowBg = i % 2 === 0 ? "transparent" : "rgba(255,255,255,0.04)";
-    const songCode = song.Song_Code == null ? "" : String(song.Song_Code);
-    const isSelected = selectedCode != null && songCode === selectedCode;
     const selectedBg = isSelected ? "rgba(255, 106, 95, 0.35)" : rowBg;
     const borderStyle = isSelected ? "2px solid var(--accent, #ff6a5f)" : "1px solid rgba(255,255,255,0.2)";
-    const hoverStyle = "transition:all 0.2s;";
-html += `<tr data-row-index="${i}" data-song-code="${escapeHtml(songCode)}" style="background:${selectedBg};cursor:pointer;border:${borderStyle};${hoverStyle}">`;
+    html += `<tr data-row-index="${i}" data-song-code="${escapeHtml(songCode)}" style="background:${selectedBg};cursor:pointer;border:${borderStyle};transition:all 0.2s;">`;
     for (let j = 0; j < cells.length; j += 1) {
-      html += `<td style="padding:8px 10px;border:1px solid rgba(255,255,255,0.2);">${escapeHtml(cells[j])}</td>`;
+      if (j === 0) {
+        html += `<td style="padding:8px 10px;border:1px solid rgba(255,255,255,0.2);text-align:center;width:36px;">${cells[j]}</td>`;
+      } else {
+        html += `<td style="padding:8px 10px;border:1px solid rgba(255,255,255,0.2);">${escapeHtml(cells[j])}</td>`;
+      }
     }
     html += "</tr>";
   }
@@ -991,7 +1001,7 @@ function readQueryParams() {
 function redirectToAvesChoir(studentId, songCode) {
   const sid = encodeURIComponent(studentId == null ? "" : String(studentId));
   const sc = encodeURIComponent(songCode == null ? "" : String(songCode));
-  window.location.href = `https://aveschoir.org/vsae-registration?StudentID=${sid}&song-code=${sc}`;
+  window.location.href = `https://aveschoir.org/Vocal-Solo-Event?StudentID=${sid}&song-code=${sc}`;
 }
 
 function getSelectedValues(selectEl) {
@@ -1111,6 +1121,30 @@ async function init() {
   const songCodeToIndex = new Map();
   const referenceItems = [];
   let suggestionTimeout = null;
+
+  /* ── NEW: submit-button state helper ── */
+  function updateSubmitButton() {
+    if (!submitButton) {
+      return;
+    }
+    if (selectedSongCode) {
+      submitButton.disabled = false;
+      submitButton.style.opacity = "1";
+      submitButton.style.cursor = "pointer";
+      const match = allSongs.find(
+        (s) => s && String(s.Song_Code) === selectedSongCode
+      );
+      submitButton.textContent = match
+        ? `Submit: ${String(match.Title || "").substring(0, 50)}`
+        : "Submit Selected Song";
+    } else {
+      submitButton.disabled = true;
+      submitButton.style.opacity = "0.5";
+      submitButton.style.cursor = "not-allowed";
+      submitButton.textContent = "Click a song row to select";
+    }
+  }
+  /* ── END NEW ── */
 
   try {
     const resp = await fetch("VSAE_Data_Final.csv");
@@ -1396,6 +1430,9 @@ async function init() {
 
     wireSelection(resultsContainer);
     wireSelection(missingResultsContainer);
+
+    /* ── NEW: keep submit button in sync after every render ── */
+    updateSubmitButton();
   }
 
   const watchedIds = [
@@ -1453,13 +1490,16 @@ async function init() {
     });
   }
 
+  /* ── CHANGED: submit button with user feedback ── */
   if (submitButton) {
     submitButton.addEventListener("click", () => {
       if (!selectedSongCode) {
+        alert("Please select a song first by clicking on a row in the table.");
         return;
       }
       redirectToAvesChoir(currentStudentId, selectedSongCode);
     });
+    updateSubmitButton();
   }
 
   if (referenceInput && currentPrevSongCode) {
