@@ -1,3 +1,63 @@
+/* ═══════════════════════════════════════════════════════
+ *  DATA SOURCE CONFIGURATION
+ *  Set DATA_SOURCE_URL to the API endpoint once Mark
+ *  provides it.  The code auto-detects JSON vs CSV from
+ *  the response Content-Type header.
+ *
+ *  API  → "https://aveschoir.org/api/songs"
+ *  CSV  → "VSAE_Data_Final.csv"
+ * ═══════════════════════════════════════════════════════ */
+const DATA_SOURCE_URL = "VSAE_Data_Final.csv"; //change this to api endpoint url
+ 
+/*  fetchSongData()
+ *  Fetches from DATA_SOURCE_URL.
+ *  • If the response is JSON  → returns the parsed array directly.
+ *  • If the response is CSV   → parses with loadVSAEData().
+ *
+ *  Expected JSON shape from the API:
+ *  [
+ *    {
+ *      "Song_Code":      "100-0006",
+ *      "Title":          "Ave Maria",
+ *      "Composer":       "Bach/Gounod",
+ *      "VocalRange":     "Soprano",
+ *      "Class":          "A",
+ *      "Language":       "Latin",
+ *      "Genre":          "Sacred",
+ *      "Time Period":    "Romantic",
+ *      "Highest Note":   "G5",
+ *      "Lowest Note":    "C4",
+ *      "Runtime of Song":"3:45",
+ *      "Music_Notes":    ""
+ *    },
+ *    …
+ *  ]
+ */
+async function fetchSongData() {
+  const resp = await fetch(DATA_SOURCE_URL);
+  if (!resp.ok) {
+    throw new Error(`Failed to fetch song data (${resp.status})`);
+  }
+ 
+  const contentType = (resp.headers.get("Content-Type") || "").toLowerCase();
+ 
+  if (contentType.includes("application/json")) {
+    const json = await resp.json();
+    if (Array.isArray(json)) {
+      return json;
+    }
+    if (json && Array.isArray(json.songs)) {
+      return json.songs;
+    }
+    if (json && Array.isArray(json.data)) {
+      return json.data;
+    }
+    throw new Error("API returned JSON but no song array was found. Expected a top-level array or an object with a \"songs\" or \"data\" key.");
+  }
+ 
+  const csvText = await resp.text();
+  return loadVSAEData(csvText);
+}
 function loadVSAEData(csvText) {
   function parseCSV(text) {
     const rows = [];
