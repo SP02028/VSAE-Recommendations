@@ -893,8 +893,10 @@ function renderSongTable(songs, containerId, options) {
     const rowBg = i % 2 === 0 ? "transparent" : "rgba(255,255,255,0.04)";
     const songCode = song.Song_Code == null ? "" : String(song.Song_Code);
     const isSelected = selectedCode != null && songCode === selectedCode;
-    const selectedBg = isSelected ? "rgba(255, 106, 95, 0.24)" : rowBg;
-    html += `<tr data-row-index="${i}" data-song-code="${escapeHtml(songCode)}" style="background:${selectedBg};cursor:pointer;">`;
+    const selectedBg = isSelected ? "rgba(255, 106, 95, 0.35)" : rowBg;
+    const borderStyle = isSelected ? "2px solid var(--accent, #ff6a5f)" : "1px solid rgba(255,255,255,0.2)";
+    const hoverStyle = "transition:all 0.2s;";
+html += `<tr data-row-index="${i}" data-song-code="${escapeHtml(songCode)}" style="background:${selectedBg};cursor:pointer;border:${borderStyle};${hoverStyle}">`;
     for (let j = 0; j < cells.length; j += 1) {
       html += `<td style="padding:8px 10px;border:1px solid rgba(255,255,255,0.2);">${escapeHtml(cells[j])}</td>`;
     }
