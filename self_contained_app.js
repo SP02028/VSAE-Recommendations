@@ -1,1601 +1,687 @@
-/* ═══════════════════════════════════════════════════════
- *  DATA SOURCE CONFIGURATION
- *  Set DATA_SOURCE_URL to the API endpoint once Mark
- *  provides it.  The code auto-detects JSON vs CSV from
- *  the response Content-Type header.
- *
- *  API  → "https://aveschoir.org/api/songs"
- *  CSV  → "VSAE_Data_Final.csv"
- * ═══════════════════════════════════════════════════════ */
-const DATA_SOURCE_URL = "VSAE_Data_Final.csv"; //change this to api endpoint url
- 
-/*  fetchSongData()
- *  Fetches from DATA_SOURCE_URL.
- *  • If the response is JSON  → returns the parsed array directly.
- *  • If the response is CSV   → parses with loadVSAEData().
- *
- *  Expected JSON shape from the API:
- *  [
- *    {
- *      "Song_Code":      "100-0006",
- *      "Title":          "Ave Maria",
- *      "Composer":       "Bach/Gounod",
- *      "VocalRange":     "Soprano",
- *      "Class":          "A",
- *      "Language":       "Latin",
- *      "Genre":          "Sacred",
- *      "Time Period":    "Romantic",
- *      "Highest Note":   "G5",
- *      "Lowest Note":    "C4",
- *      "Runtime of Song":"3:45",
- *      "Music_Notes":    ""
- *    },
- *    …
- *  ]
- */
-async function fetchSongData() {
-  const resp = await fetch(DATA_SOURCE_URL);
-  if (!resp.ok) {
-    throw new Error(`Failed to fetch song data (${resp.status})`);
-  }
- 
-  const contentType = (resp.headers.get("Content-Type") || "").toLowerCase();
- 
-  if (contentType.includes("application/json")) {
-    const json = await resp.json();
-    if (Array.isArray(json)) {
-      return json;
-    }
-    if (json && Array.isArray(json.songs)) {
-      return json.songs;
-    }
-    if (json && Array.isArray(json.data)) {
-      return json.data;
-    }
-    throw new Error("API returned JSON but no song array was found. Expected a top-level array or an object with a \"songs\" or \"data\" key.");
-  }
- 
-  const csvText = await resp.text();
-  return loadVSAEData(csvText);
+// ════════════════════════════════════════════════════════════════
+// UTILITIES
+// ════════════════════════════════════════════════════════════════
+var PITCH_CLASS={C:0,'C#':1,Db:1,D:2,'D#':3,Eb:3,E:4,F:5,'F#':6,Gb:6,G:7,'G#':8,Ab:8,A:9,'A#':10,Bb:10,B:11};
+
+function noteToMidi(s){
+  if(typeof s!=='string') return null;
+  s=s.trim().split(/[(),]/)[0].trim();
+  if(!s||s.toUpperCase()==='N/A') return null;
+  var m=s.match(/([A-Ga-g][b#]?)(\d)/);
+  if(!m) return null;
+  var p=m[1].length>1?m[1][0].toUpperCase()+m[1][1].toLowerCase():m[1].toUpperCase();
+  if(!(p in PITCH_CLASS)) return null;
+  return(parseInt(m[2],10)+1)*12+PITCH_CLASS[p];
 }
-function loadVSAEData(csvText) {
-  function parseCSV(text) {
-    const rows = [];
-    let row = [];
-    let field = "";
-    let inQuotes = false;
 
-    for (let i = 0; i < text.length; i += 1) {
-      const ch = text[i];
+function parseNoteInput(s){
+  if(!s||typeof s!=='string'||!s.trim()) return null;
+  return noteToMidi(s.trim());
+}
 
-      if (ch === '"') {
-        if (inQuotes && text[i + 1] === '"') {
-          field += '"';
-          i += 1;
-        } else {
-          inQuotes = !inQuotes;
-        }
-      } else if (ch === ',' && !inQuotes) {
-        row.push(field);
-        field = "";
-      } else if ((ch === '\n' || ch === '\r') && !inQuotes) {
-        if (ch === '\r' && text[i + 1] === '\n') {
-          i += 1;
-        }
+function runtimeToSeconds(s){
+  if(typeof s!=='string') return null;
+  s=s.trim();
+  if(!s||s.toUpperCase()==='N/A') return null;
+  var m=s.match(/^(\d+):(\d{2}(?:\.\d+)?)$/);
+  if(!m) return null;
+  return Math.round(parseInt(m[1],10)*60+parseFloat(m[2]));
+}
 
-        row.push(field);
-        rows.push(row);
-        row = [];
-        field = "";
-      } else {
-        field += ch;
-      }
-    }
+function median(arr){
+  if(!arr.length) return null;
+  var s=arr.slice().sort(function(a,b){return a-b;});
+  var mid=Math.floor(s.length/2);
+  return s.length%2?s[mid]:(s[mid-1]+s[mid])/2;
+}
 
-    if (field.length > 0 || row.length > 0) {
-      row.push(field);
-      rows.push(row);
-    }
+function esc(v){
+  return String(v==null?'':v)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
 
-    return rows;
+function uniq(arr){
+  var s={},o=[];
+  arr.forEach(function(v){var t=String(v||'').trim();if(t&&!s[t]){s[t]=1;o.push(t);}});
+  return o.sort();
+}
+
+// ════════════════════════════════════════════════════════════════
+// CSV PARSING & FEATURE ENGINEERING
+// ════════════════════════════════════════════════════════════════
+function parseCSV(text){
+  var rows=[],row=[],field='',inQ=false;
+  for(var i=0;i<text.length;i++){
+    var ch=text[i];
+    if(ch==='"'){if(inQ&&text[i+1]==='"'){field+='"';i++;}else{inQ=!inQ;}}
+    else if(ch===','&&!inQ){row.push(field);field='';}
+    else if((ch==='\n'||ch==='\r')&&!inQ){
+      if(ch==='\r'&&text[i+1]==='\n') i++;
+      row.push(field);rows.push(row);row=[];field='';
+    } else field+=ch;
   }
+  if(field||row.length){row.push(field);rows.push(row);}
+  return rows;
+}
 
-  const rows = parseCSV(csvText || "");
-  if (rows.length === 0) {
-    return [];
-  }
-
-  const headers = rows[0].map((h, idx) => {
-    const trimmed = String(h == null ? "" : h).trim();
-    if (idx === 0) {
-      return trimmed.replace(/^\uFEFF/, "");
-    }
-    return trimmed || `__extra_col_${idx + 1}`;
+function loadVSAEData(text){
+  var rows=parseCSV(text||'');
+  if(!rows.length) return [];
+  var headers=rows[0].map(function(h,i){
+    var t=String(h||'').trim();
+    return i===0?t.replace(/^\uFEFF/,''):t;
   });
-
-  const titleIndex = headers.findIndex((h) => h.toLowerCase() === "title");
-  const songs = [];
-
-  for (let r = 1; r < rows.length; r += 1) {
-    const raw = rows[r];
-    if (!raw || raw.length === 0) {
-      continue;
-    }
-
-    const values = raw.map((v) => String(v == null ? "" : v).trim());
-
-    const title = titleIndex >= 0 ? (values[titleIndex] || "").trim() : "";
-    if (!title) {
-      continue;
-    }
-
-    const lastVal = (values[values.length - 1] || "").toLowerCase();
-    if (lastVal.includes("should probably be removed")) {
-      continue;
-    }
-
-    const obj = {};
-    for (let i = 0; i < headers.length; i += 1) {
-      obj[headers[i]] = values[i] == null ? "" : values[i];
-    }
-
+  var tIdx=headers.findIndex(function(h){return h.toLowerCase()==='title';});
+  var songs=[];
+  for(var r=1;r<rows.length;r++){
+    var vals=(rows[r]||[]).map(function(v){return String(v||'').trim();});
+    if(!vals.length) continue;
+    var title=tIdx>=0?vals[tIdx]||'':'';
+    if(!title) continue;
+    var last=(vals[vals.length-1]||'').toLowerCase();
+    if(last.includes('should probably be removed')) continue;
+    var obj={};
+    headers.forEach(function(h,i){obj[h]=vals[i]||'';});
     songs.push(obj);
   }
-
   return songs;
 }
 
-const PITCH_CLASS = {
-  C: 0,
-  "C#": 1,
-  Db: 1,
-  D: 2,
-  "D#": 3,
-  Eb: 3,
-  E: 4,
-  F: 5,
-  "F#": 6,
-  Gb: 6,
-  G: 7,
-  "G#": 8,
-  Ab: 8,
-  A: 9,
-  "A#": 10,
-  Bb: 10,
-  B: 11,
+var ERA_KEYS=['Renaissance','Baroque','Classical','Romantic','Modern'];
+var VR_DEFAULTS={
+  Soprano:{high:79,low:65},'Mezzo Soprano':{high:77,low:62},
+  Alto:{high:77,low:60},Tenor:{high:76,low:60},
+  Baritone:{high:64,low:48},Bass:{high:62,low:43},'Vocal All':{high:77,low:60}
 };
 
-function noteToMidi(noteStr) {
-  if (typeof noteStr !== "string") {
-    return null;
-  }
-
-  let cleaned = noteStr.trim();
-  cleaned = cleaned.split(/[(),]/)[0].trim();
-  if (cleaned === "N/A" || cleaned === "" || cleaned === "n/a") {
-    return null;
-  }
-
-  const match = cleaned.match(/([A-Ga-g][b#]?)(\d)/);
-  if (!match) {
-    return null;
-  }
-
-  const rawPitch = match[1];
-  const octave = Number.parseInt(match[2], 10);
-  const pitch =
-    rawPitch.length > 1
-      ? rawPitch[0].toUpperCase() + rawPitch.slice(1).toLowerCase()
-      : rawPitch.toUpperCase();
-
-  if (!Object.prototype.hasOwnProperty.call(PITCH_CLASS, pitch)) {
-    return null;
-  }
-
-  return (octave + 1) * 12 + PITCH_CLASS[pitch];
+function inferEra(tp){
+  if(!tp||typeof tp!=='string') return 'Unknown';
+  var low=tp.toLowerCase();
+  for(var i=0;i<ERA_KEYS.length;i++) if(low.includes(ERA_KEYS[i].toLowerCase())) return ERA_KEYS[i];
+  var m=tp.match(/(\d{3,4})/);
+  if(!m) return 'Unknown';
+  var yr=parseInt(m[1],10);
+  if(yr<1600) return 'Renaissance';
+  if(yr<1750) return 'Baroque';
+  if(yr<1820) return 'Classical';
+  if(yr<1910) return 'Romantic';
+  return 'Modern';
 }
 
-function runtimeToSeconds(rtStr) {
-  if (typeof rtStr !== "string") {
-    return null;
-  }
-
-  const cleaned = rtStr.trim();
-  if (!cleaned || cleaned.toUpperCase() === "N/A") {
-    return null;
-  }
-
-  const match = cleaned.match(/^(\d+):(\d{2}(?:\.\d+)?)$/);
-  if (!match) {
-    return null;
-  }
-
-  const minutes = Number.parseInt(match[1], 10);
-  const secondsPart = Number.parseFloat(match[2]);
-  if (!Number.isFinite(minutes) || !Number.isFinite(secondsPart)) {
-    return null;
-  }
-
-  return Math.round(minutes * 60 + secondsPart);
-}
-
-const ERA_KEYWORDS = ["Renaissance", "Baroque", "Classical", "Romantic", "Modern"];
-
-const VOCAL_RANGE_MIDI_DEFAULTS = {
-  Soprano: { high: 79, low: 65 },
-  "Mezzo Soprano": { high: 77, low: 62 },
-  Alto: { high: 77, low: 60 },
-  Tenor: { high: 76, low: 60 },
-  Baritone: { high: 64, low: 48 },
-  Bass: { high: 62, low: 43 },
-  "Vocal All": { high: 77, low: 60 },
-};
-
-const RANGE_MIDI_BOUNDS = {
-  Soprano: { low: 65, high: 79 },
-  "Mezzo Soprano": { low: 62, high: 77 },
-  Alto: { low: 60, high: 77 },
-  Tenor: { low: 60, high: 76 },
-  Baritone: { low: 48, high: 64 },
-  Bass: { low: 43, high: 62 },
-  "Vocal All": { low: 60, high: 77 },
-};
-
-const MALE_RANGES = ["tenor", "baritone", "bass"];
-
-const VOICE_PART_OPTIONS = ["Soprano", "Mezzo Soprano", "Alto", "Tenor", "Baritone", "Bass"];
-
-const LANGUAGE_OPTIONS = ["English", "Italian", "French", "German", "Spanish", "Latin"];
-
-const CLASS_ORDINAL_MAP = { A: 1, B: 2, C: 3 };
-
-const ERA_ORDINAL_MAP = {
-  Renaissance: 1,
-  Baroque: 2,
-  Classical: 3,
-  Romantic: 4,
-  Modern: 5,
-  Unknown: 3,
-};
-
-let allSongs = [];
-let currentStudentId = null;
-let currentPrevSongCode = null;
-let selectedSongCode = null;
-
-function inferEra(timePeriod) {
-  const value = typeof timePeriod === "string" ? timePeriod.trim() : "";
-  if (!value) {
-    return "Unknown";
-  }
-
-  const lower = value.toLowerCase();
-  for (let i = 0; i < ERA_KEYWORDS.length; i += 1) {
-    const era = ERA_KEYWORDS[i];
-    if (lower.includes(era.toLowerCase())) {
-      return era;
-    }
-  }
-
-  const yearMatch = value.match(/(\d{3,4})/);
-  if (!yearMatch) {
-    return "Unknown";
-  }
-
-  const year = Number.parseInt(yearMatch[1], 10);
-  if (!Number.isFinite(year)) {
-    return "Unknown";
-  }
-  if (year < 1600) {
-    return "Renaissance";
-  }
-  if (year < 1750) {
-    return "Baroque";
-  }
-  if (year < 1820) {
-    return "Classical";
-  }
-  if (year < 1910) {
-    return "Romantic";
-  }
-  return "Modern";
-}
-
-function median(numbers) {
-  if (!numbers || numbers.length === 0) {
-    return null;
-  }
-
-  const sorted = numbers.slice().sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  if (sorted.length % 2 === 1) {
-    return sorted[mid];
-  }
-  return (sorted[mid - 1] + sorted[mid]) / 2;
-}
-
-function engineerFeatures(songs) {
-  if (!Array.isArray(songs)) {
-    return songs;
-  }
-
-  const runtimeValues = [];
-
-  for (let i = 0; i < songs.length; i += 1) {
-    const song = songs[i];
-    if (!song || typeof song !== "object") {
-      continue;
-    }
-
-    const era = inferEra(song["Time Period"]);
-    song.Era = era;
-
-    const vocalRange = typeof song.VocalRange === "string" ? song.VocalRange.trim() : "";
-    const defaults = VOCAL_RANGE_MIDI_DEFAULTS[vocalRange] || null;
-
-    let highestMidi = noteToMidi(song["Highest Note"]);
-    let lowestMidi = noteToMidi(song["Lowest Note"]);
-
-    if (highestMidi == null && defaults) {
-      highestMidi = defaults.high;
-    }
-    if (lowestMidi == null && defaults) {
-      lowestMidi = defaults.low;
-    }
-
-    song.HighestNote_MIDI = highestMidi;
-    song.LowestNote_MIDI = lowestMidi;
-
-    if (highestMidi == null || lowestMidi == null) {
-      song.RangeSpan = 0;
-    } else {
-      song.RangeSpan = Math.max(0, highestMidi - lowestMidi);
-    }
-
-    const runtimeSec = runtimeToSeconds(song["Runtime of Song"]);
-    song.RuntimeSeconds = runtimeSec;
-    if (runtimeSec != null) {
-      runtimeValues.push(runtimeSec);
-    }
-
-    const classKey = typeof song.Class === "string" ? song.Class.trim().toUpperCase() : "";
-    song.ClassOrdinal = CLASS_ORDINAL_MAP[classKey] || 2;
-    song.EraOrdinal = ERA_ORDINAL_MAP[era] || 3;
-  }
-
-  const runtimeMedian = median(runtimeValues);
-  const filledRuntime = runtimeMedian == null ? null : Math.round(runtimeMedian);
-  if (filledRuntime != null) {
-    for (let i = 0; i < songs.length; i += 1) {
-      const song = songs[i];
-      if (!song || typeof song !== "object") {
-        continue;
-      }
-      if (song.RuntimeSeconds == null) {
-        song.RuntimeSeconds = filledRuntime;
-      }
-    }
-  }
-
-  return songs;
-}
-
-function normalizeMinMax(values) {
-  if (!Array.isArray(values) || values.length === 0) {
-    return [];
-  }
-
-  let min = Number.POSITIVE_INFINITY;
-  let max = Number.NEGATIVE_INFINITY;
-  for (let i = 0; i < values.length; i += 1) {
-    const value = Number(values[i]);
-    if (!Number.isFinite(value)) {
-      continue;
-    }
-    if (value < min) {
-      min = value;
-    }
-    if (value > max) {
-      max = value;
-    }
-  }
-
-  if (!Number.isFinite(min) || !Number.isFinite(max) || max === min) {
-    return values.map(() => 0.0);
-  }
-
-  const span = max - min;
-  return values.map((v) => {
-    const value = Number(v);
-    if (!Number.isFinite(value)) {
-      return 0.0;
-    }
-    return (value - min) / span;
+function engineerFeatures(songs){
+  var rts=[];
+  songs.forEach(function(s){
+    s.Era=inferEra(s['Time Period']);
+    var d=VR_DEFAULTS[s.VocalRange]||null;
+    var hi=noteToMidi(s['Highest Note']); if(hi==null&&d) hi=d.high; s.HighestNote_MIDI=hi;
+    var lo=noteToMidi(s['Lowest Note']);  if(lo==null&&d) lo=d.low;  s.LowestNote_MIDI=lo;
+    s.RangeSpan=(hi!=null&&lo!=null)?Math.max(0,hi-lo):0;
+    var rt=runtimeToSeconds(s['Runtime of Song']); s.RuntimeSeconds=rt; if(rt!=null) rts.push(rt);
+    var ck={A:1,B:2,C:3}; s.ClassOrdinal=ck[String(s.Class||'').trim().toUpperCase()]||2;
+    var ek={Renaissance:1,Baroque:2,Classical:3,Romantic:4,Modern:5,Unknown:3};
+    s.EraOrdinal=ek[s.Era]||3;
+    s._pprScore=null;
   });
+  var med=median(rts);
+  if(med!=null) songs.forEach(function(s){if(s.RuntimeSeconds==null) s.RuntimeSeconds=Math.round(med);});
+  return songs;
 }
 
-function buildFeatureMatrix(songs, selectedFeatures) {
-  if (!Array.isArray(selectedFeatures) || selectedFeatures.length === 0) {
-    throw new Error("selectedFeatures must not be empty");
+// ════════════════════════════════════════════════════════════════
+// MISSING DATA CHECK
+// ════════════════════════════════════════════════════════════════
+function isMissingData(s){
+  var hi=String(s['Highest Note']||'').trim().toUpperCase();
+  var lo=String(s['Lowest Note']||'').trim().toUpperCase();
+  var rt=String(s['Runtime of Song']||'').trim().toUpperCase();
+  var missingNote=hi==='N/A'||hi===''||lo==='N/A'||lo==='';
+  var missingRuntime=rt==='N/A'||rt==='';
+  return missingNote||missingRuntime;
+}
+
+// ════════════════════════════════════════════════════════════════
+// FEATURE MATRIX
+// ════════════════════════════════════════════════════════════════
+function normalizeMinMax(vals){
+  var mn=Infinity,mx=-Infinity;
+  vals.forEach(function(v){var n=Number(v);if(isFinite(n)){if(n<mn)mn=n;if(n>mx)mx=n;}});
+  if(!isFinite(mn)||mn===mx) return vals.map(function(){return 0;});
+  var span=mx-mn;
+  return vals.map(function(v){var n=Number(v);return isFinite(n)?(n-mn)/span:0;});
+}
+
+function buildFeatureMatrix(songs,features){
+  if(!features||!features.length) throw new Error('No features selected');
+  var matrix=songs.map(function(){return[];});
+  function has(f){return features.indexOf(f)>=0;}
+
+  if(has('VocalRange')){
+    var vrCats=uniq(songs.map(function(s){return s.VocalRange||'Vocal All';}));
+    songs.forEach(function(s,i){vrCats.forEach(function(c){matrix[i].push(((s.VocalRange||'Vocal All')===c?1:0)*3);});});
   }
-
-  const rows = Array.isArray(songs) ? songs : [];
-  const matrix = rows.map(() => []);
-
-  const hasFeature = (name) => selectedFeatures.includes(name);
-
-  if (hasFeature("VocalRange")) {
-    const categories = Array.from(
-      new Set(
-        rows.map((song) => {
-          const vr = song && typeof song.VocalRange === "string" ? song.VocalRange.trim() : "";
-          return vr || "Vocal All";
-        })
-      )
-    );
-
-    for (let i = 0; i < rows.length; i += 1) {
-      const song = rows[i];
-      const vr = song && typeof song.VocalRange === "string" ? song.VocalRange.trim() : "";
-      const value = vr || "Vocal All";
-      for (let j = 0; j < categories.length; j += 1) {
-        matrix[i].push((value === categories[j] ? 1.0 : 0.0) * 3.0);
-      }
-    }
+  if(has('Class')){
+    songs.forEach(function(s,i){matrix[i].push((s.ClassOrdinal/3)*2.5);});
   }
-
-  if (hasFeature("Class")) {
-    for (let i = 0; i < rows.length; i += 1) {
-      const song = rows[i] || {};
-      const classOrdinalRaw = Number(song.ClassOrdinal);
-      const classOrdinal = Number.isFinite(classOrdinalRaw) ? classOrdinalRaw : 2;
-      matrix[i].push((classOrdinal / 3.0) * 2.5);
-    }
+  if(has('Language')){
+    var langCats=uniq(songs.map(function(s){return s.Language||'English';}));
+    songs.forEach(function(s,i){langCats.forEach(function(c){matrix[i].push(((s.Language||'English')===c?1:0)*1.5);});});
   }
-
-  if (hasFeature("Language")) {
-    const categories = Array.from(
-      new Set(
-        rows.map((song) => {
-          const lang = song && typeof song.Language === "string" ? song.Language.trim() : "";
-          return lang || "English";
-        })
-      )
-    );
-
-    for (let i = 0; i < rows.length; i += 1) {
-      const song = rows[i];
-      const lang = song && typeof song.Language === "string" ? song.Language.trim() : "";
-      const value = lang || "English";
-      for (let j = 0; j < categories.length; j += 1) {
-        matrix[i].push((value === categories[j] ? 1.0 : 0.0) * 1.5);
-      }
-    }
+  if(has('Genre')){
+    var genreCats=uniq(songs.map(function(s){return(s.Genre||'unknown').toLowerCase();}));
+    songs.forEach(function(s,i){var g=(s.Genre||'unknown').toLowerCase();genreCats.forEach(function(c){matrix[i].push((g===c?1:0)*1.5);});});
   }
-
-  if (hasFeature("Genre")) {
-    const categories = Array.from(
-      new Set(
-        rows.map((song) => {
-          const genre = song && typeof song.Genre === "string" ? song.Genre.trim().toLowerCase() : "";
-          return genre || "unknown";
-        })
-      )
-    );
-
-    for (let i = 0; i < rows.length; i += 1) {
-      const song = rows[i];
-      const genre = song && typeof song.Genre === "string" ? song.Genre.trim().toLowerCase() : "";
-      const value = genre || "unknown";
-      for (let j = 0; j < categories.length; j += 1) {
-        matrix[i].push((value === categories[j] ? 1.0 : 0.0) * 1.5);
-      }
-    }
+  if(has('Era')){
+    songs.forEach(function(s,i){matrix[i].push((s.EraOrdinal/5)*1);});
   }
-
-  if (hasFeature("Era")) {
-    for (let i = 0; i < rows.length; i += 1) {
-      const song = rows[i] || {};
-      const eraOrdinalRaw = Number(song.EraOrdinal);
-      const eraOrdinal = Number.isFinite(eraOrdinalRaw) ? eraOrdinalRaw : 3;
-      matrix[i].push((eraOrdinal / 5.0) * 1.0);
-    }
+  if(has('RangeSpan')){
+    var rsNorm=normalizeMinMax(songs.map(function(s){return s.RangeSpan||0;}));
+    songs.forEach(function(s,i){matrix[i].push(rsNorm[i]);});
   }
-
-  if (hasFeature("RangeSpan")) {
-    const normalized = normalizeMinMax(
-      rows.map((song) => {
-        const value = Number(song && song.RangeSpan);
-        return Number.isFinite(value) ? value : 0;
-      })
-    );
-    for (let i = 0; i < normalized.length; i += 1) {
-      matrix[i].push(normalized[i] * 1.0);
-    }
+  if(has('Runtime')){
+    var rtNorm=normalizeMinMax(songs.map(function(s){return s.RuntimeSeconds||0;}));
+    songs.forEach(function(s,i){matrix[i].push(rtNorm[i]*0.5);});
   }
-
-  if (hasFeature("Runtime")) {
-    const normalized = normalizeMinMax(
-      rows.map((song) => {
-        const value = Number(song && song.RuntimeSeconds);
-        return Number.isFinite(value) ? value : 0;
-      })
-    );
-    for (let i = 0; i < normalized.length; i += 1) {
-      matrix[i].push(normalized[i] * 0.5);
-    }
-  }
-
-  for (let i = 0; i < matrix.length; i += 1) {
-    for (let j = 0; j < matrix[i].length; j += 1) {
-      matrix[i][j] = Number(matrix[i][j]);
-    }
-  }
-
   return matrix;
 }
 
-function cosineSimilarity(vecA, vecB) {
-  const len = Math.min(vecA.length, vecB.length);
-  let dot = 0.0;
-  let normA = 0.0;
-  let normB = 0.0;
-
-  for (let i = 0; i < len; i += 1) {
-    const a = Number(vecA[i]);
-    const b = Number(vecB[i]);
-    const aa = Number.isFinite(a) ? a : 0.0;
-    const bb = Number.isFinite(b) ? b : 0.0;
-    dot += aa * bb;
-    normA += aa * aa;
-    normB += bb * bb;
-  }
-
-  if (normA === 0 || normB === 0) {
-    return 0.0;
-  }
-
-  const sim = dot / (Math.sqrt(normA) * Math.sqrt(normB));
-  if (sim < 0) {
-    return 0.0;
-  }
-  if (sim > 1) {
-    return 1.0;
-  }
-  return sim;
+// ════════════════════════════════════════════════════════════════
+// PERSONALIZED PAGERANK
+// ════════════════════════════════════════════════════════════════
+function cosine(a,b){
+  var dot=0,na=0,nb=0,len=Math.min(a.length,b.length);
+  for(var i=0;i<len;i++){dot+=a[i]*b[i];na+=a[i]*a[i];nb+=b[i]*b[i];}
+  if(!na||!nb) return 0;
+  return Math.min(1,Math.max(0,dot/(Math.sqrt(na)*Math.sqrt(nb))));
 }
 
-function baseTitle(title) {
-  const raw = typeof title === "string" ? title.trim() : "";
-  return raw
-    .replace(
-      /\s*\((?:High Voice|Low Voice|Soprano|Alto|Tenor|Bass|Baritone|Mezzo Soprano|Vocal All)\)\s*$/i,
-      ""
-    )
-    .trim();
+function computePPR(matrix,queryIdx){
+  var n=matrix.length;
+  var sim=[];
+  for(var i=0;i<n;i++){sim.push(new Float64Array(n));}
+  for(var i=0;i<n;i++) for(var j=0;j<n;j++) sim[i][j]=i===j?0:cosine(matrix[i],matrix[j]);
+  var k=Math.min(12,Math.max(3,Math.floor(n/10)));
+  var sparse=[];
+  for(var i=0;i<n;i++){sparse.push(new Float64Array(n));}
+  for(var i=0;i<n;i++){
+    var row=Array.from(sim[i]).map(function(v,j){return{j:j,v:v};}).sort(function(a,b){return b.v-a.v;});
+    for(var t=0;t<Math.min(k,row.length);t++) sparse[i][row[t].j]=Math.max(0,row[t].v);
+  }
+  var T=[];
+  for(var i=0;i<n;i++){
+    T.push(new Float64Array(n));
+    var sum=0; for(var j=0;j<n;j++) sum+=sparse[i][j];
+    if(sum>0) for(var j=0;j<n;j++) T[i][j]=sparse[i][j]/sum;
+  }
+  var alpha=0.85;
+  var teleport=new Float64Array(n); teleport[queryIdx]=1;
+  var rank=new Float64Array(teleport);
+  for(var iter=0;iter<100;iter++){
+    var next=new Float64Array(n);
+    for(var j=0;j<n;j++){var s=0;for(var i=0;i<n;i++) s+=T[i][j]*rank[i];next[j]=alpha*s+(1-alpha)*teleport[j];}
+    var l1=0;for(var i=0;i<n;i++) l1+=Math.abs(next[i]-rank[i]);
+    rank=next;
+    if(l1<1e-10) break;
+  }
+  return rank;
 }
 
-function personalizedPageRank(featureMatrix, queryIndex, songs, excludeSameBase) {
-  const n = Array.isArray(featureMatrix) ? featureMatrix.length : 0;
-  if (!Array.isArray(songs)) {
-    return songs;
-  }
-  if (n === 0 || songs.length === 0) {
-    return songs;
-  }
-
-  const similarity = Array.from({ length: n }, () => Array(n).fill(0.0));
-  for (let i = 0; i < n; i += 1) {
-    for (let j = 0; j < n; j += 1) {
-      if (i === j) {
-        similarity[i][j] = 0.0;
-      } else {
-        similarity[i][j] = cosineSimilarity(featureMatrix[i] || [], featureMatrix[j] || []);
-      }
-    }
-  }
-
-  const k = Math.min(12, Math.max(3, Math.floor(n / 10)));
-  const sparse = Array.from({ length: n }, () => Array(n).fill(0.0));
-  for (let i = 0; i < n; i += 1) {
-    const pairs = [];
-    for (let j = 0; j < n; j += 1) {
-      pairs.push({ idx: j, value: similarity[i][j] });
-    }
-    pairs.sort((a, b) => b.value - a.value);
-    const keep = Math.min(k, pairs.length);
-    for (let t = 0; t < keep; t += 1) {
-      const p = pairs[t];
-      sparse[i][p.idx] = p.value;
-    }
-  }
-
-  const transition = Array.from({ length: n }, () => Array(n).fill(0.0));
-  for (let i = 0; i < n; i += 1) {
-    let rowSum = 0.0;
-    for (let j = 0; j < n; j += 1) {
-      rowSum += sparse[i][j];
-    }
-    if (rowSum !== 0) {
-      for (let j = 0; j < n; j += 1) {
-        transition[i][j] = sparse[i][j] / rowSum;
-      }
-    }
-  }
-
-  const alpha = 0.85;
-  const teleport = Array(n).fill(0.0);
-  if (queryIndex >= 0 && queryIndex < n) {
-    teleport[queryIndex] = 1.0;
-  }
-  let rank = teleport.slice();
-
-  for (let iter = 0; iter < 100; iter += 1) {
-    const nextRank = Array(n).fill(0.0);
-    for (let j = 0; j < n; j += 1) {
-      let sum = 0.0;
-      for (let i = 0; i < n; i += 1) {
-        sum += transition[i][j] * rank[i];
-      }
-      nextRank[j] = alpha * sum + (1 - alpha) * teleport[j];
-    }
-
-    let l1 = 0.0;
-    for (let i = 0; i < n; i += 1) {
-      l1 += Math.abs(nextRank[i] - rank[i]);
-    }
-    rank = nextRank;
-    if (l1 < 1e-10) {
-      break;
-    }
-  }
-
-  if (queryIndex >= 0 && queryIndex < n) {
-    rank[queryIndex] = -Infinity;
-  }
-
-  if (excludeSameBase && queryIndex >= 0 && queryIndex < songs.length) {
-    const queryTitle = songs[queryIndex] && songs[queryIndex].Title;
-    const queryBase = baseTitle(queryTitle).toLowerCase();
-    if (queryBase) {
-      for (let i = 0; i < Math.min(n, songs.length); i += 1) {
-        if (i === queryIndex) {
-          continue;
-        }
-        const title = songs[i] && typeof songs[i].Title === "string" ? songs[i].Title : "";
-        if (title.trim().toLowerCase().startsWith(queryBase)) {
-          rank[i] = 0.0;
-        }
-      }
-    }
-  }
-
-  for (let i = 0; i < songs.length; i += 1) {
-    songs[i].pprScore = i < rank.length ? rank[i] : 0.0;
-  }
-
-  songs.sort((a, b) => b.pprScore - a.pprScore);
-  return songs;
+function baseTitle(t){
+  return(t||'').replace(/\s*\((?:High|Low|Medium|Vocal All|Bass|Baritone|Soprano|Alto|Tenor|Mezzo Soprano)[^)]*\)\s*$/i,'').trim();
 }
 
-function filterSongs(songs, filters) {
-  if (!Array.isArray(songs)) {
-    return [];
-  }
+// ════════════════════════════════════════════════════════════════
+// FILTERING
+// ════════════════════════════════════════════════════════════════
+var RANGE_BOUNDS={
+  Soprano:{low:65,high:79},'Mezzo Soprano':{low:62,high:77},
+  Alto:{low:60,high:77},Tenor:{low:60,high:76},
+  Baritone:{low:48,high:64},Bass:{low:43,high:62},'Vocal All':{low:60,high:77}
+};
+var MALE_VR=['tenor','baritone','bass'];
 
-  const cfg = filters && typeof filters === "object" ? filters : {};
-  const vocalRanges = Array.isArray(cfg.vocalRanges) ? cfg.vocalRanges : [];
-  const classes = Array.isArray(cfg.classes) ? cfg.classes : [];
-  const languages = Array.isArray(cfg.languages) ? cfg.languages : [];
+function shouldTransposeForMen(selectedRanges){
+  return selectedRanges.length===1&&MALE_VR.indexOf(selectedRanges[0].toLowerCase())>=0;
+}
 
-  let filtered = songs.slice();
-
-  if (vocalRanges.length > 0) {
-    const vocalSet = new Set(vocalRanges);
-    filtered = filtered.filter((song) => {
-      const songRange = song && typeof song.VocalRange === "string" ? song.VocalRange : "";
-      return vocalSet.has(songRange) || songRange === "Vocal All";
-    });
-  }
-
-  if (vocalRanges.length === 1) {
-    const selectedRange = vocalRanges[0];
-    const bounds = RANGE_MIDI_BOUNDS[selectedRange];
-    if (bounds) {
-      const transposeForMen = vocalRanges.some((range) => MALE_RANGES.includes(String(range).trim().toLowerCase()));
-
-      filtered = filtered.filter((song) => {
-        const lowestRaw = Number(song && song.LowestNote_MIDI);
-        const highestRaw = Number(song && song.HighestNote_MIDI);
-        if (!Number.isFinite(lowestRaw) || !Number.isFinite(highestRaw)) {
-          return false;
-        }
-
-        let lowest = lowestRaw;
-        let highest = highestRaw;
-        const songRange = song && typeof song.VocalRange === "string" ? song.VocalRange.trim() : "";
-        if (transposeForMen && songRange === "Vocal All") {
-          lowest -= 12;
-          highest -= 12;
-        }
-
-        return lowest <= bounds.high && highest >= bounds.low;
+function applyVocalRangeFilter(songs,selectedRanges){
+  if(!selectedRanges.length) return songs;
+  var set={};selectedRanges.forEach(function(v){set[v]=1;});
+  var filtered=songs.filter(function(s){return set[s.VocalRange];});
+  if(selectedRanges.length===1){
+    var bounds=RANGE_BOUNDS[selectedRanges[0]];
+    if(bounds){
+      var isMale=shouldTransposeForMen(selectedRanges);
+      filtered=filtered.filter(function(s){
+        var hi=s.HighestNote_MIDI,lo=s.LowestNote_MIDI;
+        if(hi==null||lo==null) return false;
+        if(isMale&&s.VocalRange==='Vocal All'){lo-=12;hi-=12;}
+        return lo<=bounds.high&&hi>=bounds.low;
       });
     }
   }
-
-  if (classes.length > 0) {
-    const classSet = new Set(classes);
-    filtered = filtered.filter((song) => classSet.has(song && song.Class));
-  }
-
-  if (languages.length > 0) {
-    const languageSet = new Set(languages.map((lang) => normalizeLanguageValue(lang)));
-    filtered = filtered.filter((song) => {
-      const songLang = normalizeLanguageValue(song && song.Language != null ? song.Language : "");
-      return languageSet.has(songLang);
-    });
-  }
-
   return filtered;
 }
 
-function parseNoteInput(str) {
-  if (str == null) {
-    return null;
-  }
-  if (typeof str !== "string") {
-    return null;
-  }
-  if (!str.trim()) {
-    return null;
-  }
-
-  const midi = noteToMidi(str);
-  return midi == null ? null : midi;
+// ════════════════════════════════════════════════════════════════
+// RANGE MATCH SCORING
+// ════════════════════════════════════════════════════════════════
+function scoreRangeMatch(songs,userLow,userHigh,isMale){
+  var lo=Math.min(userLow,userHigh),hi=Math.max(userLow,userHigh);
+  var span=Math.max(1,hi-lo);
+  songs.forEach(function(s){
+    var sLo=s.LowestNote_MIDI,sHi=s.HighestNote_MIDI;
+    if(sLo==null||sHi==null){s._rangeScore=0;return;}
+    if(isMale&&s.VocalRange==='Vocal All'){sLo-=12;sHi-=12;}
+    var overlap=Math.max(0,Math.min(sHi,hi)-Math.max(sLo,lo));
+    var score=(overlap/span)*100;
+    if(sLo>=lo&&sHi<=hi) score=100;
+    s._rangeScore=Math.round(Math.max(0,Math.min(100,score)));
+  });
 }
 
-function scoreRangeMatch(songs, userLowMidi, userHighMidi, isMaleRange) {
-  if (!Array.isArray(songs)) {
-    return songs;
-  }
-
-  const low = Number(userLowMidi);
-  const high = Number(userHighMidi);
-  if (!Number.isFinite(low) || !Number.isFinite(high)) {
-    for (let i = 0; i < songs.length; i += 1) {
-      if (songs[i] && typeof songs[i] === "object") {
-        songs[i].rangeMatchScore = 0;
-      }
-    }
-    return songs;
-  }
-
-  const userLow = Math.min(low, high);
-  const userHigh = Math.max(low, high);
-  const userSpan = Math.max(1, userHigh - userLow);
-
-  for (let i = 0; i < songs.length; i += 1) {
-    const song = songs[i];
-    if (!song || typeof song !== "object") {
-      continue;
-    }
-
-    let songLow = Number(song.LowestNote_MIDI);
-    let songHigh = Number(song.HighestNote_MIDI);
-    if (!Number.isFinite(songLow) || !Number.isFinite(songHigh)) {
-      song.rangeMatchScore = 0;
-      continue;
-    }
-
-    if (isMaleRange && song.VocalRange === "Vocal All") {
-      songLow -= 12;
-      songHigh -= 12;
-    }
-
-    const overlap = Math.max(0, Math.min(songHigh, userHigh) - Math.max(songLow, userLow));
-    let score = Math.round((overlap / userSpan) * 100);
-
-    if (songLow >= userLow && songHigh <= userHigh) {
-      score = 100;
-    }
-
-    if (score < 0) {
-      score = 0;
-    } else if (score > 100) {
-      score = 100;
-    }
-
-    song.rangeMatchScore = score;
-  }
-
-  return songs;
+// ════════════════════════════════════════════════════════════════
+// NOTE RANGE LABEL
+// ════════════════════════════════════════════════════════════════
+function transposeNoteLabel(noteStr,shift){
+  if(!noteStr||shift===0) return String(noteStr||'').trim();
+  var m=noteStr.trim().match(/^([A-Ga-g][b#]?)(\d+)$/);
+  if(!m) return noteStr.trim();
+  var pitch=m[1].length>1?m[1][0].toUpperCase()+m[1][1].toLowerCase():m[1].toUpperCase();
+  return pitch+(parseInt(m[2],10)+shift);
 }
 
-function hasMissingData(song) {
-  if (!song || typeof song !== "object") {
-    return true;
-  }
-
-  const lowestRaw = String(song["Lowest Note"] == null ? "" : song["Lowest Note"]).trim();
-  const highestRaw = String(song["Highest Note"] == null ? "" : song["Highest Note"]).trim();
-  const runtimeRaw = String(song["Runtime of Song"] == null ? "" : song["Runtime of Song"]).trim();
-
-  const missingNote = !lowestRaw || !highestRaw || lowestRaw.toUpperCase() === "N/A" || highestRaw.toUpperCase() === "N/A";
-  const missingRuntime = !runtimeRaw || runtimeRaw.toUpperCase() === "N/A";
-
-  if (missingNote || missingRuntime) {
-    return true;
-  }
-
-  const musicNotes = String(song.Music_Notes == null ? "" : song.Music_Notes).trim().toLowerCase();
-  if (musicNotes && musicNotes !== "n/a") {
-    return true;
-  }
-
-  return false;
+function noteRangeLabel(song,transposeVocalAll){
+  var lo=String(song['Lowest Note']||'').trim();
+  var hi=String(song['Highest Note']||'').trim();
+  if(!lo||!hi) return 'Missing';
+  var bad=['N/A','NAN',''];
+  if(bad.indexOf(lo.toUpperCase())>=0||bad.indexOf(hi.toUpperCase())>=0) return 'Missing';
+  var isVA=String(song.VocalRange||'').trim()==='Vocal All';
+  var shift=transposeVocalAll&&isVA?-1:0;
+  return transposeNoteLabel(lo,shift)+' - '+transposeNoteLabel(hi,shift);
 }
 
-function escapeHtml(value) {
-  return String(value == null ? "" : value)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/\"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-function shiftDisplayNoteDownOctave(noteStr) {
-  if (typeof noteStr !== "string") {
-    return "";
-  }
-  const cleaned = noteStr.trim();
-  const match = cleaned.match(/^([A-Ga-g][b#]?)(\d+)$/);
-  if (!match) {
-    return cleaned;
-  }
-  const pitch = match[1];
-  const octave = Number.parseInt(match[2], 10);
-  if (!Number.isFinite(octave)) {
-    return cleaned;
-  }
-  const normalizedPitch =
-    pitch.length > 1 ? pitch[0].toUpperCase() + pitch.slice(1).toLowerCase() : pitch.toUpperCase();
-  return `${normalizedPitch}${octave - 1}`;
-}
-
-function renderSongTable(songs, containerId, options) {
-  const container = typeof document !== "undefined" ? document.getElementById(containerId) : null;
-  if (!container) {
-    return;
-  }
-
-  const cfg = options && typeof options === "object" ? options : {};
-  const topKRaw = Number(cfg.topK);
-  const topK = Number.isFinite(topKRaw) ? Math.max(0, Math.floor(topKRaw)) : (Array.isArray(songs) ? songs.length : 0);
-  const showSimilarity = Boolean(cfg.showSimilarity);
-  const showRangeMatch = Boolean(cfg.showRangeMatch);
-  const isMaleRange = Boolean(cfg.isMaleRange);
-  const selectedCode = cfg.selectedSongCode == null ? null : String(cfg.selectedSongCode);
-
-  const source = Array.isArray(songs) ? songs : [];
-  const rows = source.slice(0, topK);
-
-  const headers = [
-    "",
-    "#",
-    "Title",
-    "Composer",
-    "VocalRange",
-    "Class",
-    "Language",
-    "Genre",
-    "Era",
-    "Note Range",
-    "Runtime",
-  ];
-  if (showSimilarity) {
-    headers.push("PPR Score");
-  }
-  if (showRangeMatch) {
-    headers.push("Range Match");
-  }
-
-  let html = "";
-  html += '<table style="width:100%;border-collapse:collapse;border:1px solid var(--accent, #ff6a5f);background:var(--bg-input, #2b3242);color:var(--text-main, #eef3ff);font-size:14px;">';
-  html += "<thead><tr>";
-  for (let i = 0; i < headers.length; i += 1) {
-    html += `<th style="text-align:left;padding:8px 10px;border:1px solid var(--accent, #ff6a5f);">${escapeHtml(headers[i])}</th>`;
-  }
-  html += "</tr></thead><tbody>";
-
-  for (let i = 0; i < rows.length; i += 1) {
-    const song = rows[i] && typeof rows[i] === "object" ? rows[i] : {};
-
-    const lowestRaw = String(song["Lowest Note"] == null ? "" : song["Lowest Note"]).trim();
-    const highestRaw = String(song["Highest Note"] == null ? "" : song["Highest Note"]).trim();
-    const lowestMissing = !lowestRaw || lowestRaw.toUpperCase() === "N/A";
-    const highestMissing = !highestRaw || highestRaw.toUpperCase() === "N/A";
-
-    let noteRange = "Missing";
-    if (!lowestMissing && !highestMissing) {
-      const transpose = isMaleRange && String(song.VocalRange || "").trim() === "Vocal All";
-      const lowestLabel = transpose ? shiftDisplayNoteDownOctave(lowestRaw) : lowestRaw;
-      const highestLabel = transpose ? shiftDisplayNoteDownOctave(highestRaw) : highestRaw;
-      noteRange = `${lowestLabel} - ${highestLabel}`;
-    }
-
-    const runtimeRaw = String(song["Runtime of Song"] == null ? "" : song["Runtime of Song"]).trim();
-    const runtime = !runtimeRaw || runtimeRaw.toUpperCase() === "N/A" ? "Missing" : runtimeRaw;
-
-    const songCode = song.Song_Code == null ? "" : String(song.Song_Code);
-    const isSelected = selectedCode != null && songCode === selectedCode;
-
-    const radioHtml = isSelected
-      ? '<span style="display:inline-block;width:18px;height:18px;border-radius:50%;border:2px solid var(--accent, #ff6a5f);background:var(--accent, #ff6a5f);vertical-align:middle;"><span style="display:block;width:8px;height:8px;border-radius:50%;background:#fff;margin:3px auto;"></span></span>'
-      : '<span style="display:inline-block;width:18px;height:18px;border-radius:50%;border:2px solid rgba(255,255,255,0.4);background:transparent;vertical-align:middle;"></span>';
-
-    const cells = [
-      radioHtml,
-      String(i + 1),
-      String(song.Title == null ? "" : song.Title),
-      String(song.Composer == null ? "" : song.Composer),
-      String(song.VocalRange == null ? "" : song.VocalRange),
-      String(song.Class == null ? "" : song.Class),
-      String(song.Language == null ? "" : song.Language),
-      String(song.Genre == null ? "" : song.Genre),
-      String(song.Era == null ? "" : song.Era),
-      noteRange,
-      runtime,
-    ];
-
-    if (showSimilarity) {
-      const ppr = Number(song.pprScore);
-      cells.push(Number.isFinite(ppr) ? ppr.toFixed(4) : String(song.pprScore == null ? "" : song.pprScore));
-    }
-    if (showRangeMatch) {
-      const rangeScore = Number(song.rangeMatchScore);
-      const displayScore = Number.isFinite(rangeScore) ? Math.round(rangeScore) : 0;
-      cells.push(`${displayScore}%`);
-    }
-
-    const rowBg = i % 2 === 0 ? "transparent" : "rgba(255,255,255,0.04)";
-    const selectedBg = isSelected ? "rgba(255, 106, 95, 0.35)" : rowBg;
-    const borderStyle = isSelected ? "2px solid var(--accent, #ff6a5f)" : "1px solid rgba(255,255,255,0.2)";
-    html += `<tr data-row-index="${i}" data-song-code="${escapeHtml(songCode)}" style="background:${selectedBg};cursor:pointer;border:${borderStyle};transition:all 0.2s;">`;
-    for (let j = 0; j < cells.length; j += 1) {
-      if (j === 0) {
-        html += `<td style="padding:8px 10px;border:1px solid rgba(255,255,255,0.2);text-align:center;width:36px;">${cells[j]}</td>`;
-      } else {
-        html += `<td style="padding:8px 10px;border:1px solid rgba(255,255,255,0.2);">${escapeHtml(cells[j])}</td>`;
-      }
-    }
-    html += "</tr>";
-  }
-
-  html += "</tbody></table>";
-  container.innerHTML = html;
-}
-
-function buildSongDisplayLabel(song) {
-  if (!song || typeof song !== "object") {
-    return "";
-  }
-  const title = String(song.Title || "");
-  const vocalRange = String(song.VocalRange || "");
-  const cls = String(song.Class || "");
-  const language = normalizeLanguageValue(song.Language);
-  return `${title} | ${vocalRange} | Class ${cls} | ${language}`;
-}
-
-function resolveReferenceSong(referenceText, referenceItems, songCodeToIndex) {
-  const raw = String(referenceText == null ? "" : referenceText).trim();
-  if (!raw) {
-    return null;
-  }
-
-  if (songCodeToIndex && songCodeToIndex.has(raw)) {
-    return { code: raw, index: songCodeToIndex.get(raw) };
-  }
-
-  const lower = raw.toLowerCase();
-  const exact = referenceItems.find((item) => item.label.toLowerCase() === lower);
-  if (exact) {
-    return exact;
-  }
-
-  const startsWith = referenceItems.find((item) => item.label.toLowerCase().startsWith(lower));
-  if (startsWith) {
-    return startsWith;
-  }
-
-  const includes = referenceItems.find((item) => item.label.toLowerCase().includes(lower));
-  if (includes) {
-    return includes;
-  }
-
-  return null;
-}
-
-function filterReferenceItems(query, referenceItems) {
-  const needle = String(query == null ? "" : query).trim().toLowerCase();
-  if (!needle) {
-    return referenceItems;
-  }
-
-  return referenceItems.filter((item) => item.label.toLowerCase().includes(needle));
-}
-
-function normalizeLanguageValue(value) {
-  const raw = String(value == null ? "" : value).trim();
-  if (!raw) {
-    return "";
-  }
-
-  const cleaned = raw.replace(/[?]+$/g, "").trim();
-  const lower = cleaned.toLowerCase();
-  for (let i = 0; i < LANGUAGE_OPTIONS.length; i += 1) {
-    if (lower === LANGUAGE_OPTIONS[i].toLowerCase()) {
-      return LANGUAGE_OPTIONS[i];
-    }
-  }
-
-  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1).toLowerCase();
-}
-
-function readQueryParams() {
-  if (typeof window === "undefined" || !window.location) {
-    return { studentId: null, prevSongCode: null };
-  }
-
-  const params = new URLSearchParams(window.location.search || "");
-  const studentIdRaw = params.get("StudentID");
-  const songCodeRaw = params.get("song-code");
-
-  return {
-    studentId: studentIdRaw == null || studentIdRaw === "" ? null : studentIdRaw,
-    prevSongCode: songCodeRaw == null || songCodeRaw === "" ? null : songCodeRaw,
-  };
-}
-
-function redirectToAvesChoir(studentId, songCode) {
-  const sid = encodeURIComponent(studentId == null ? "" : String(studentId));
-  const sc = encodeURIComponent(songCode == null ? "" : String(songCode));
-  window.location.href = `https://aveschoir.org/Vocal-Solo-Event?StudentID=${sid}&song-code=${sc}`;
-}
-
-function getSelectedValues(selectEl) {
-  if (!selectEl || !selectEl.options) {
-    return [];
-  }
-  const values = [];
-  for (let i = 0; i < selectEl.options.length; i += 1) {
-    const opt = selectEl.options[i];
-    if (opt.selected) {
-      values.push(opt.value);
-    }
-  }
-  return values;
-}
-
-function setSelectOptions(selectEl, values) {
-  if (!selectEl) {
-    return;
-  }
-  selectEl.innerHTML = "";
-  for (let i = 0; i < values.length; i += 1) {
-    const value = values[i];
-    const option = document.createElement("option");
-    option.value = value;
-    option.textContent = value;
-    option.selected = true;
-    selectEl.appendChild(option);
-  }
-}
-
-function setSingleSelectOptions(selectEl, values, defaultIndex = 0) {
-  if (!selectEl) {
-    return;
-  }
-
-  selectEl.innerHTML = "";
-  for (let i = 0; i < values.length; i += 1) {
-    const option = document.createElement("option");
-    option.value = values[i];
-    option.textContent = values[i];
-    option.selected = i === defaultIndex;
-    selectEl.appendChild(option);
-  }
-  if (values.length > 0) {
-    selectEl.value = values[Math.min(defaultIndex, values.length - 1)];
-  }
-}
-
-function setTab(tabId) {
-  const panes = document.querySelectorAll(".tab-pane");
-  const buttons = document.querySelectorAll(".tab-btn");
-  for (let i = 0; i < panes.length; i += 1) {
-    panes[i].classList.toggle("active", panes[i].id === tabId);
-  }
-  for (let i = 0; i < buttons.length; i += 1) {
-    buttons[i].classList.toggle("active", buttons[i].dataset.tab === tabId);
-  }
-}
-
-function renderSimpleBarList(containerId, counts) {
-  const container = document.getElementById(containerId);
-  if (!container) {
-    return;
-  }
-
-  const entries = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
-  const maxCount = entries.length ? Math.max(...entries.map(([, count]) => count)) : 1;
-  container.innerHTML = entries
-    .map(([label, count]) => {
-      const width = Math.max(6, Math.round((count / maxCount) * 100));
-      return `
-        <div style="display:flex;align-items:center;gap:10px;margin:6px 0;">
-          <div style="min-width:140px;color:var(--text-main);font-size:.82rem;">${escapeHtml(label)}</div>
-          <div style="flex:1;height:14px;background:rgba(255,255,255,.08);border-radius:999px;overflow:hidden;">
-            <div style="height:100%;width:${width}%;background:var(--accent);"></div>
-          </div>
-          <div style="min-width:32px;text-align:right;font-family:monospace;color:var(--text-main);">${count}</div>
-        </div>`;
-    })
-    .join("");
-}
-
-async function init() {
-  if (typeof document === "undefined") {
-    return;
-  }
-
-  const { studentId, prevSongCode } = readQueryParams();
-  currentStudentId = studentId;
-  currentPrevSongCode = prevSongCode;
-
-  const vocalSelect = document.getElementById("filter-vocal-range");
-  const classSelect = document.getElementById("filter-class");
-  const langSelect = document.getElementById("filter-language");
-  const lowNoteInput = document.getElementById("input-low-note");
-  const highNoteInput = document.getElementById("input-high-note");
-  const toggleSimilarity = document.getElementById("toggle-similarity");
-  const referenceInput = document.getElementById("select-reference");
-  const referenceSuggestions = document.getElementById("reference-suggestions");
-  const excludeTranspositions = document.getElementById("exclude-transpositions");
-  const topKSlider = document.getElementById("slider-topk");
-  const resultsContainer = document.getElementById("results-table");
-  const missingResultsContainer = document.getElementById("missing-results-table");
-  const submitButton = document.getElementById("btn-submit");
-
-  const featureCheckboxes = [
-    { id: "feature-vocalrange", name: "VocalRange" },
-    { id: "feature-class", name: "Class" },
-    { id: "feature-language", name: "Language" },
-    { id: "feature-genre", name: "Genre" },
-    { id: "feature-era", name: "Era" },
-    { id: "feature-rangespan", name: "RangeSpan" },
-    { id: "feature-runtime", name: "Runtime" },
-  ];
-
-  const songCodeToIndex = new Map();
-  const referenceItems = [];
-  let suggestionTimeout = null;
-
-  /* ── NEW: submit-button state helper ── */
-  function updateSubmitButton() {
-    if (!submitButton) {
-      return;
-    }
-    if (selectedSongCode) {
-      submitButton.disabled = false;
-      submitButton.style.opacity = "1";
-      submitButton.style.cursor = "pointer";
-      const match = allSongs.find(
-        (s) => s && String(s.Song_Code) === selectedSongCode
-      );
-      submitButton.textContent = match
-        ? `Submit: ${String(match.Title || "").substring(0, 50)}`
-        : "Submit Selected Song";
-    } else {
-      submitButton.disabled = true;
-      submitButton.style.opacity = "0.5";
-      submitButton.style.cursor = "not-allowed";
-      submitButton.textContent = "Click a song row to select";
-    }
-  }
-  /* ── END NEW ── */
-
-  try {
-    const resp = await fetch("VSAE_Data_Final.csv");
-    if (!resp.ok) {
-      throw new Error(`Failed to fetch CSV (${resp.status})`);
-    }
-    const csvText = await resp.text();
-    allSongs = engineerFeatures(loadVSAEData(csvText));
-    songCodeToIndex.clear();
-    referenceItems.length = 0;
-    for (let i = 0; i < allSongs.length; i += 1) {
-      const code = allSongs[i] && allSongs[i].Song_Code != null ? String(allSongs[i].Song_Code) : String(i + 1);
-      songCodeToIndex.set(code, i);
-      referenceItems.push({
-        code,
-        index: i,
-        label: buildSongDisplayLabel(allSongs[i]),
-      });
-    }
-  } catch (err) {
-    const loadingEl = document.getElementById("loading");
-    const appEl = document.getElementById("app");
-    const errorBox = document.getElementById("error-box");
-    if (loadingEl) {
-      loadingEl.style.display = "none";
-    }
-    if (appEl) {
-      appEl.style.display = "none";
-    }
-    if (errorBox) {
-      errorBox.style.display = "block";
-      errorBox.textContent = `Could not load data: ${err.message}`;
-    }
-    if (resultsContainer) {
-      resultsContainer.textContent = `Could not load data: ${err.message}`;
-    }
-    return;
-  }
-
-  const loadingEl = document.getElementById("loading");
-  const appEl = document.getElementById("app");
-  if (loadingEl) {
-    loadingEl.style.display = "none";
-  }
-  if (appEl) {
-    appEl.style.display = "block";
-  }
-
-  const totalStat = document.getElementById("stat-total");
-  const rangesStat = document.getElementById("stat-ranges");
-  const langsStat = document.getElementById("stat-langs");
-  const composersStat = document.getElementById("stat-composers");
-  if (totalStat) {
-    totalStat.textContent = String(allSongs.length);
-  }
-  if (rangesStat) {
-    rangesStat.textContent = String(new Set(allSongs.map((song) => song.VocalRange)).size);
-  }
-  if (langsStat) {
-    langsStat.textContent = String(
-      new Set(allSongs.map((song) => normalizeLanguageValue(song.Language)).filter(Boolean)).size
-    );
-  }
-  if (composersStat) {
-    composersStat.textContent = String(new Set(allSongs.map((song) => song.Composer)).size);
-  }
-
-  renderSimpleBarList(
-    "overview-vocalrange",
-    new Map(Object.entries(
-      allSongs.reduce((acc, song) => {
-        const key = String(song.VocalRange || "Unknown");
-        acc[key] = (acc[key] || 0) + 1;
-        return acc;
-      }, {})
-    ))
-  );
-  renderSimpleBarList(
-    "overview-class",
-    new Map(Object.entries(
-      allSongs.reduce((acc, song) => {
-        const key = String(song.Class || "Unknown");
-        acc[key] = (acc[key] || 0) + 1;
-        return acc;
-      }, {})
-    ))
-  );
-  renderSimpleBarList(
-    "overview-language",
-    new Map(Object.entries(
-      allSongs.reduce((acc, song) => {
-        const key = normalizeLanguageValue(song.Language) || "Unknown";
-        acc[key] = (acc[key] || 0) + 1;
-        return acc;
-      }, {})
-    ))
-  );
-  renderSimpleBarList(
-    "overview-era",
-    new Map(Object.entries(
-      allSongs.reduce((acc, song) => {
-        const key = String(song.Era || "Unknown");
-        acc[key] = (acc[key] || 0) + 1;
-        return acc;
-      }, {})
-    ))
-  );
-
-  referenceItems.sort((a, b) => a.label.localeCompare(b.label));
-
-  const uniqueSorted = (arr) => Array.from(new Set(arr.filter((v) => String(v || "").trim() !== ""))).sort();
-  setSingleSelectOptions(vocalSelect, VOICE_PART_OPTIONS, 0);
-  setSelectOptions(classSelect, uniqueSorted(allSongs.map((s) => s.Class)));
-  setSelectOptions(langSelect, LANGUAGE_OPTIONS.filter((lang) => allSongs.some((song) => normalizeLanguageValue(song.Language) === lang)));
-
-  if (referenceInput) {
-    if (currentPrevSongCode != null && songCodeToIndex.has(String(currentPrevSongCode))) {
-      const refIdx = songCodeToIndex.get(String(currentPrevSongCode));
-      referenceInput.value = buildSongDisplayLabel(allSongs[refIdx]);
-    } else if (referenceItems.length > 0) {
-      referenceInput.value = referenceItems[0].label;
-    }
-  }
-
-  const tabButtons = document.querySelectorAll(".tab-btn");
-  for (let i = 0; i < tabButtons.length; i += 1) {
-    tabButtons[i].addEventListener("click", () => setTab(tabButtons[i].dataset.tab));
-  }
-
-  function hideReferenceSuggestions() {
-    if (referenceSuggestions) {
-      referenceSuggestions.classList.remove("on");
-      referenceSuggestions.innerHTML = "";
-    }
-  }
-
-  function showReferenceSuggestions() {
-    if (!referenceSuggestions || !referenceInput) {
-      return;
-    }
-
-    const matches = filterReferenceItems(referenceInput.value, referenceItems).slice(0, 30);
-    referenceSuggestions.innerHTML = "";
-    if (!matches.length) {
-      hideReferenceSuggestions();
-      return;
-    }
-
-    for (let i = 0; i < matches.length; i += 1) {
-      const item = matches[i];
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "suggestion-item";
-      button.textContent = item.label;
-      button.dataset.code = item.code;
-      button.dataset.label = item.label;
-      button.addEventListener("pointerdown", (event) => {
-        event.preventDefault();
-        referenceInput.value = item.label;
-        hideReferenceSuggestions();
-        rerunPipeline();
-      });
-      referenceSuggestions.appendChild(button);
-    }
-
-    referenceSuggestions.classList.add("on");
-  }
-
-  function rerunPipeline() {
-    const vocalRanges = getSelectedValues(vocalSelect);
-    const classes = getSelectedValues(classSelect);
-    const languages = getSelectedValues(langSelect).map((value) => normalizeLanguageValue(value));
-
-    const isMaleRange = vocalRanges.some((range) => MALE_RANGES.includes(String(range).trim().toLowerCase()));
-
-    let working = filterSongs(allSongs, { vocalRanges, classes, languages });
-
-    let similarityActive = false;
-    const similarityEnabled = Boolean(toggleSimilarity && toggleSimilarity.checked);
-    const referenceMatch = resolveReferenceSong(referenceInput ? referenceInput.value : "", referenceItems, songCodeToIndex);
-    if (similarityEnabled && referenceMatch) {
-      const queryAllIndex = referenceMatch.index;
-      const checkedFeatures = [];
-      for (let i = 0; i < featureCheckboxes.length; i += 1) {
-        const box = document.getElementById(featureCheckboxes[i].id);
-        if (box && box.checked) {
-          checkedFeatures.push(featureCheckboxes[i].name);
-        }
-      }
-
-      if (checkedFeatures.length > 0 && Number.isFinite(queryAllIndex) && queryAllIndex >= 0) {
-        const featureMatrix = buildFeatureMatrix(allSongs, checkedFeatures);
-        const rankedAllSongs = personalizedPageRank(
-          featureMatrix,
-          queryAllIndex,
-          allSongs.slice(),
-          Boolean(excludeTranspositions && excludeTranspositions.checked)
-        );
-        const pprByCode = new Map();
-        for (let i = 0; i < rankedAllSongs.length; i += 1) {
-          const song = rankedAllSongs[i];
-          const code = song && song.Song_Code != null ? String(song.Song_Code) : String(i + 1);
-          pprByCode.set(code, Number(song.pprScore) || 0);
-        }
-        working = working.map((song) => {
-          const code = song && song.Song_Code != null ? String(song.Song_Code) : "";
-          song.pprScore = pprByCode.has(code) ? pprByCode.get(code) : 0;
-          return song;
-        });
-        similarityActive = true;
-      }
-    }
-
-    const lowMidi = parseNoteInput(lowNoteInput ? lowNoteInput.value : null);
-    const highMidi = parseNoteInput(highNoteInput ? highNoteInput.value : null);
-    const rangeActive = lowMidi != null && highMidi != null;
-    if (rangeActive) {
-      scoreRangeMatch(working, lowMidi, highMidi, isMaleRange);
-    }
-
-    const completeSongs = [];
-    const missingSongs = [];
-    for (let i = 0; i < working.length; i += 1) {
-      const song = working[i];
-      if (hasMissingData(song)) {
-        missingSongs.push(song);
-      } else {
-        completeSongs.push(song);
-      }
-    }
-
-    if (rangeActive) {
-      completeSongs.sort((a, b) => Number(b.rangeMatchScore || 0) - Number(a.rangeMatchScore || 0));
-      missingSongs.sort((a, b) => Number(b.rangeMatchScore || 0) - Number(a.rangeMatchScore || 0));
-    } else if (similarityActive) {
-      completeSongs.sort((a, b) => Number(b.pprScore || 0) - Number(a.pprScore || 0));
-      missingSongs.sort((a, b) => Number(b.pprScore || 0) - Number(a.pprScore || 0));
-    }
-
-    const topKValue = Number.parseInt(topKSlider && topKSlider.value ? topKSlider.value : "10", 10);
-    renderSongTable(completeSongs, "results-table", {
-      topK: Number.isFinite(topKValue) ? topKValue : 10,
-      showSimilarity: similarityActive,
-      showRangeMatch: rangeActive,
-      isMaleRange,
-      selectedSongCode,
+// ════════════════════════════════════════════════════════════════
+// TABLE RENDERING
+// ════════════════════════════════════════════════════════════════
+var DISPLAY_COLS=['Title','Composer','VocalRange','Class','Language','Genre','Era','Note Range','Runtime'];
+
+function renderTable(songs,containerId,transposeForMen,topK){
+  var el=document.getElementById(containerId);
+  if(!el) return;
+  if(!songs||!songs.length){el.innerHTML='<div class="empty-row">No songs match the current filters.</div>';return;}
+  var rows=songs.slice(0,topK||songs.length);
+  var html='<table><thead><tr><th>#</th>';
+  DISPLAY_COLS.forEach(function(c){html+='<th>'+esc(c)+'</th>';});
+  html+='</tr></thead><tbody>';
+  rows.forEach(function(s,i){
+    var rt=String(s['Runtime of Song']||'').trim();
+    if(!rt||rt.toUpperCase()==='N/A'||rt.toUpperCase()==='NAN') rt='Missing';
+    var noteRange=noteRangeLabel(s,transposeForMen);
+    html+='<tr><td style="color:var(--muted);">'+(i+1)+'</td>';
+    ['Title','Composer','VocalRange','Class','Language','Genre','Era'].forEach(function(c){
+      html+='<td>'+esc(s[c]||'')+'</td>';
     });
-
-    renderSongTable(missingSongs, "missing-results-table", {
-      topK: Number.isFinite(topKValue) ? topKValue : 10,
-      showSimilarity: similarityActive,
-      showRangeMatch: rangeActive,
-      isMaleRange,
-      selectedSongCode,
-    });
-
-    if (resultsContainer) {
-      const completeCountEl = document.getElementById("complete-count");
-      if (completeCountEl) {
-        completeCountEl.textContent = `${completeSongs.length} songs`;
-      }
-    }
-    if (missingResultsContainer) {
-      const missingCountEl = document.getElementById("missing-count");
-      if (missingCountEl) {
-        missingCountEl.textContent = `${missingSongs.length} songs`;
-      }
-    }
-
-    const wireSelection = (container) => {
-      if (!container) {
-        return;
-      }
-      const clickableRows = container.querySelectorAll("tbody tr");
-      for (let i = 0; i < clickableRows.length; i += 1) {
-        clickableRows[i].addEventListener("click", () => {
-          const code = clickableRows[i].getAttribute("data-song-code") || "";
-          selectedSongCode = code || null;
-          rerunPipeline();
-        });
-      }
-    };
-
-    wireSelection(resultsContainer);
-    wireSelection(missingResultsContainer);
-
-    /* ── NEW: keep submit button in sync after every render ── */
-    updateSubmitButton();
-  }
-
-  const watchedIds = [
-    "filter-vocal-range",
-    "filter-class",
-    "filter-language",
-    "input-low-note",
-    "input-high-note",
-    "toggle-similarity",
-    "select-reference",
-    "exclude-transpositions",
-    "feature-vocalrange",
-    "feature-class",
-    "feature-language",
-    "feature-genre",
-    "feature-era",
-    "feature-rangespan",
-    "feature-runtime",
-    "slider-topk",
-  ];
-
-  for (let i = 0; i < watchedIds.length; i += 1) {
-    const el = document.getElementById(watchedIds[i]);
-    if (!el) {
-      continue;
-    }
-    const eventName = el.tagName === "INPUT" && String(el.type).toLowerCase() === "text" ? "input" : "change";
-    if (el === referenceInput) {
-      el.addEventListener("input", () => {
-        showReferenceSuggestions();
-        rerunPipeline();
-      });
-      el.addEventListener("focus", showReferenceSuggestions);
-      el.addEventListener("keydown", (event) => {
-        if (event.key === "Escape") {
-          hideReferenceSuggestions();
-        }
-      });
-      el.addEventListener("blur", () => {
-        suggestionTimeout = window.setTimeout(() => {
-          hideReferenceSuggestions();
-        }, 150);
-      });
-      continue;
-    }
-    el.addEventListener(eventName, rerunPipeline);
-  }
-
-  if (referenceSuggestions) {
-    referenceSuggestions.addEventListener("pointerdown", () => {
-      if (suggestionTimeout != null) {
-        window.clearTimeout(suggestionTimeout);
-        suggestionTimeout = null;
-      }
-    });
-  }
-
-  /* ── CHANGED: submit button with user feedback ── */
-  if (submitButton) {
-    submitButton.addEventListener("click", () => {
-      if (!selectedSongCode) {
-        alert("Please select a song first by clicking on a row in the table.");
-        return;
-      }
-      redirectToAvesChoir(currentStudentId, selectedSongCode);
-    });
-    updateSubmitButton();
-  }
-
-  if (referenceInput && currentPrevSongCode) {
-    referenceInput.dataset.prevSongCode = currentPrevSongCode;
-  }
-
-  if (referenceInput) {
-    showReferenceSuggestions();
-  }
-
-  rerunPipeline();
+    html+='<td>'+esc(noteRange)+'</td><td>'+esc(rt)+'</td></tr>';
+  });
+  html+='</tbody></table>';
+  el.innerHTML=html;
 }
 
-if (typeof document !== "undefined") {
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", init);
+// ════════════════════════════════════════════════════════════════
+// CHIP HELPERS
+// ════════════════════════════════════════════════════════════════
+function buildChips(containerId,values){
+  var el=document.getElementById(containerId); if(!el) return;
+  el.innerHTML='';
+  values.forEach(function(v){
+    var chip=document.createElement('span');
+    chip.className='chip';chip.textContent=v;chip.dataset.value=v;
+    chip.addEventListener('click',function(){
+      chip.classList.toggle('off');
+      runPipeline();
+    });
+    el.appendChild(chip);
+  });
+}
+
+function getActiveChips(containerId){
+  var el=document.getElementById(containerId); if(!el) return [];
+  var out=[];
+  el.querySelectorAll('.chip:not(.off)').forEach(function(c){out.push(c.dataset.value);});
+  return out;
+}
+
+// ════════════════════════════════════════════════════════════════
+// DATASET OVERVIEW CHARTS
+// ════════════════════════════════════════════════════════════════
+var _charts={};
+
+function countBy(songs,field){
+  var counts={};
+  songs.forEach(function(s){var v=String(s[field]||'Unknown').trim();counts[v]=(counts[v]||0)+1;});
+  return counts;
+}
+
+function makeChart(canvasId,counts,color){
+  var entries=Object.entries(counts).sort(function(a,b){return b[1]-a[1];});
+  var labels=entries.map(function(e){return e[0];});
+  var data=entries.map(function(e){return e[1];});
+
+  if(_charts[canvasId]) _charts[canvasId].destroy();
+  var ctx=document.getElementById(canvasId);
+  if(!ctx) return;
+  _charts[canvasId]=new Chart(ctx,{
+    type:'bar',
+    data:{
+      labels:labels,
+      datasets:[{data:data,backgroundColor:color||'rgba(255,106,95,.7)',borderColor:'rgba(255,106,95,1)',borderWidth:1,borderRadius:4}]
+    },
+    options:{
+      responsive:true,maintainAspectRatio:true,
+      plugins:{legend:{display:false}},
+      scales:{
+        x:{ticks:{color:'#bac3d8',font:{size:11}},grid:{color:'rgba(152,168,198,.1)'}},
+        y:{ticks:{color:'#bac3d8',font:{size:11},stepSize:1},grid:{color:'rgba(152,168,198,.1)'}}
+      }
+    }
+  });
+}
+
+function renderOverview(songs){
+  document.getElementById('m-total').textContent=songs.length;
+  document.getElementById('m-ranges').textContent=uniq(songs.map(function(s){return s.VocalRange;})).length;
+  document.getElementById('m-langs').textContent=uniq(songs.map(function(s){return s.Language;})).length;
+  document.getElementById('m-composers').textContent=uniq(songs.map(function(s){return s.Composer;})).length;
+
+  makeChart('chart-vr',countBy(songs,'VocalRange'));
+  makeChart('chart-class',countBy(songs,'Class'),'rgba(100,180,255,.7)');
+  makeChart('chart-lang',countBy(songs,'Language'),'rgba(100,220,150,.7)');
+  makeChart('chart-era',countBy(songs,'Era'),'rgba(220,160,255,.7)');
+
+  var cols=['Title','Composer','VocalRange','Class','Language','Genre','Era','RangeSpan','RuntimeSeconds'];
+  var html='<table><thead><tr><th>#</th>'+cols.map(function(c){return'<th>'+esc(c)+'</th>';}).join('')+'</tr></thead><tbody>';
+  songs.forEach(function(s,i){
+    html+='<tr><td style="color:var(--muted);">'+(i+1)+'</td>'+
+      cols.map(function(c){return'<td>'+esc(s[c]!=null?s[c]:'')+'</td>';}).join('')+'</tr>';
+  });
+  document.getElementById('tbl-full').innerHTML=html+'</tbody></table>';
+}
+
+// ════════════════════════════════════════════════════════════════
+// PIPELINE CACHE
+// ════════════════════════════════════════════════════════════════
+var _pprKey=null;
+
+function getPprScores(querySongIdx,features,excludeTranspositions){
+  var key=querySongIdx+'|'+features.join(',')+'|'+excludeTranspositions;
+  if(key===_pprKey) return;
+
+  _pprKey=key;
+  var matrix=buildFeatureMatrix(allSongs,features);
+  var scores=computePPR(matrix,querySongIdx);
+
+  allSongs.forEach(function(s){s._pprScore=null;});
+
+  var querySong=allSongs[querySongIdx];
+  var queryBase=baseTitle(querySong.Title).toLowerCase();
+
+  allSongs.forEach(function(s,i){
+    if(i===querySongIdx){s._pprScore=null;return;}
+    if(excludeTranspositions&&queryBase&&(s.Title||'').toLowerCase().startsWith(queryBase)){
+      s._pprScore=null;return;
+    }
+    s._pprScore=scores[i];
+  });
+}
+
+// ════════════════════════════════════════════════════════════════
+// MAIN PIPELINE
+// ════════════════════════════════════════════════════════════════
+var allSongs=null;
+
+function runPipeline(){
+  if(!allSongs) return;
+
+  var topK=parseInt(document.getElementById('slider-topk').value,10)||10;
+
+  var selVR   =getActiveChips('chips-vr');
+  var selClass=getActiveChips('chips-class');
+  var selLang =getActiveChips('chips-lang');
+  var transposeForMen=shouldTransposeForMen(selVR);
+
+  var filtered=allSongs.slice();
+
+  filtered=applyVocalRangeFilter(filtered,selVR);
+
+  if(selClass.length){var cs={};selClass.forEach(function(v){cs[v]=1;});filtered=filtered.filter(function(s){return cs[s.Class];});}
+
+  if(selLang.length){var ls={};selLang.forEach(function(v){ls[v.toLowerCase()]=1;});filtered=filtered.filter(function(s){return ls[(s.Language||'').toLowerCase()];});}
+
+  var simEnabled=false;
+  var chkSim=document.getElementById('chk-similarity');
+  if(chkSim&&chkSim.checked){
+    var refVal=document.getElementById('sel-reference').value;
+    var simMin=parseFloat(document.getElementById('slider-sim-min').value)||0;
+    var feats=[];
+    var featMap=[['feat-vocalrange','VocalRange'],['feat-class','Class'],['feat-language','Language'],
+      ['feat-genre','Genre'],['feat-era','Era'],['feat-rangespan','RangeSpan'],['feat-runtime','Runtime']];
+    featMap.forEach(function(p){var el=document.getElementById(p[0]);if(el&&el.checked) feats.push(p[1]);});
+    var excl=document.getElementById('chk-exclude-transpositions').checked;
+
+    if(refVal!==''&&feats.length){
+      var qIdx=parseInt(refVal,10);
+      if(isFinite(qIdx)&&qIdx>=0&&qIdx<allSongs.length){
+        try{
+          getPprScores(qIdx,feats,excl);
+          filtered=filtered.filter(function(s){return s._pprScore!==null&&s._pprScore>=simMin;});
+          if(filtered.length) simEnabled=true;
+        }catch(e){console.warn('PPR error:',e);}
+      }
+    }
   } else {
-    init();
+    allSongs.forEach(function(s){s._pprScore=null;});
+    _pprKey=null;
+  }
+
+  var basedFiltered=filtered.slice();
+
+  var displaySongs=basedFiltered.filter(function(s){return!isMissingData(s);});
+  var missingSongs=basedFiltered.filter(function(s){return isMissingData(s);});
+
+  var chkRange=document.getElementById('chk-range-match');
+  var rangeEnabled=chkRange&&chkRange.checked;
+  var lowMidi=null,highMidi=null;
+  var hintLow=document.getElementById('hint-low');
+  var hintHigh=document.getElementById('hint-high');
+  var hintBoth=document.getElementById('hint-both');
+
+  if(rangeEnabled){
+    var lowStr=(document.getElementById('input-low').value||'').trim();
+    var highStr=(document.getElementById('input-high').value||'').trim();
+    lowMidi=parseNoteInput(lowStr);
+    highMidi=parseNoteInput(highStr);
+
+    if(hintLow) hintLow.innerHTML=lowStr?(lowMidi!=null?'<span class="parse-ok">MIDI '+lowMidi+'</span>':'<span class="parse-err">Could not parse \''+esc(lowStr)+'\'.</span>'):'';
+    if(hintHigh) hintHigh.innerHTML=highStr?(highMidi!=null?'<span class="parse-ok">MIDI '+highMidi+'</span>':'<span class="parse-err">Could not parse \''+esc(highStr)+'\'.</span>'):'';
+    if(hintBoth){
+      if(lowMidi!=null&&highMidi!=null) hintBoth.textContent='';
+      else hintBoth.textContent='Enter both notes to score range matches.';
+    }
+
+    if(lowMidi!=null&&highMidi!=null){
+      scoreRangeMatch(displaySongs,lowMidi,highMidi,transposeForMen);
+      displaySongs.sort(function(a,b){
+        var rd=(b._rangeScore||0)-(a._rangeScore||0);
+        if(rd!==0) return rd;
+        return(b._pprScore||0)-(a._pprScore||0);
+      });
+    }
+  } else {
+    if(hintLow) hintLow.textContent='';
+    if(hintHigh) hintHigh.textContent='';
+    if(hintBoth) hintBoth.textContent='';
+    if(simEnabled){
+      displaySongs.sort(function(a,b){return(b._pprScore||0)-(a._pprScore||0);});
+    }
+  }
+
+  if(simEnabled){
+    missingSongs.sort(function(a,b){return(b._pprScore||0)-(a._pprScore||0);});
+  }
+
+  renderTable(displaySongs,'tbl-main',transposeForMen,topK);
+  renderTable(missingSongs,'tbl-missing',transposeForMen,topK);
+
+  // ── NEW: Populate song-selection dropdown ────────────────────
+  var selChosen=document.getElementById('sel-chosen-song');
+  if(selChosen){
+    var prev=selChosen.value;
+    selChosen.innerHTML='';
+
+    var placeholder=document.createElement('option');
+    placeholder.value='';
+    placeholder.textContent='\u2014 Select a song \u2014';
+    selChosen.appendChild(placeholder);
+
+    var recommended=displaySongs.slice(0,topK).concat(missingSongs.slice(0,topK));
+    for(var ri=0;ri<recommended.length;ri++){
+      var song=recommended[ri];
+      var opt=document.createElement('option');
+      opt.value=String(song.Song_Code||'');
+      opt.textContent=song.Title+' | '+song.VocalRange+' | Class '+(song.Class||'')+' | '+(song.Language||'');
+      selChosen.appendChild(opt);
+    }
+
+    if(prev){
+      var stillExists=false;
+      for(var oi=0;oi<selChosen.options.length;oi++){
+        if(selChosen.options[oi].value===prev){selChosen.value=prev;stillExists=true;break;}
+      }
+      if(!stillExists) selChosen.value='';
+    }
+
+    var submitBtn=document.getElementById('btn-submit');
+    if(submitBtn) submitBtn.disabled=!selChosen.value;
   }
 }
 
-if (typeof module !== "undefined" && module.exports) {
-  module.exports = {
-    loadVSAEData,
-    noteToMidi,
-    runtimeToSeconds,
-    engineerFeatures,
-    buildFeatureMatrix,
-    personalizedPageRank,
-    filterSongs,
-    parseNoteInput,
-    scoreRangeMatch,
-    hasMissingData,
-    renderSongTable,
-    readQueryParams,
-    redirectToAvesChoir,
-    init,
-  };
+// ════════════════════════════════════════════════════════════════
+// WIRE EVENTS
+// ════════════════════════════════════════════════════════════════
+function wire(){
+  document.querySelectorAll('.tab-btn').forEach(function(btn){
+    btn.addEventListener('click',function(){
+      document.querySelectorAll('.tab-btn').forEach(function(b){b.classList.remove('active');});
+      document.querySelectorAll('.tab-pane').forEach(function(p){p.classList.remove('active');});
+      btn.classList.add('active');
+      document.getElementById(btn.dataset.tab).classList.add('active');
+    });
+  });
+
+  var chkSim=document.getElementById('chk-similarity');
+  var simBlock=document.getElementById('sim-block');
+  chkSim.addEventListener('change',function(){
+    simBlock.classList.toggle('open',chkSim.checked);
+    if(!chkSim.checked){allSongs.forEach(function(s){s._pprScore=null;});_pprKey=null;}
+    runPipeline();
+  });
+
+  var chkRange=document.getElementById('chk-range-match');
+  var rangeBlock=document.getElementById('range-block');
+  chkRange.addEventListener('change',function(){
+    rangeBlock.classList.toggle('open',chkRange.checked);
+    runPipeline();
+  });
+
+  var sliderSim=document.getElementById('slider-sim-min');
+  sliderSim.addEventListener('input',function(){
+    document.getElementById('sim-min-label').textContent=parseFloat(sliderSim.value).toFixed(2);
+    runPipeline();
+  });
+
+  var sliderK=document.getElementById('slider-topk');
+  sliderK.addEventListener('input',function(){
+    document.getElementById('topk-label').textContent=sliderK.value;
+    runPipeline();
+  });
+
+  ['sel-reference','feat-vocalrange','feat-class','feat-language','feat-genre',
+   'feat-era','feat-rangespan','feat-runtime','chk-exclude-transpositions'].forEach(function(id){
+    var el=document.getElementById(id); if(!el) return;
+    el.addEventListener('change',function(){_pprKey=null;runPipeline();});
+  });
+
+  ['input-low','input-high'].forEach(function(id){
+    var el=document.getElementById(id); if(!el) return;
+    el.addEventListener('input',runPipeline);
+  });
+
+  // ── NEW: Song selection dropdown + submit button ─────────────
+  var selChosen=document.getElementById('sel-chosen-song');
+  var btnSubmit=document.getElementById('btn-submit');
+
+  if(selChosen){
+    selChosen.addEventListener('change',function(){
+      if(btnSubmit) btnSubmit.disabled=!selChosen.value;
+    });
+  }
+
+  if(btnSubmit){
+    btnSubmit.addEventListener('click',function(){
+      var songCode=(selChosen&&selChosen.value)||'';
+      if(!songCode){
+        alert('Please select a song from the dropdown first.');
+        return;
+      }
+      var params=new URLSearchParams(window.location.search||'');
+      var studentId=params.get('StudentID')||'';
+      window.location.href='https://aveschoir.org/Vocal-Solo-Event?StudentID='+encodeURIComponent(studentId)+'&song-code='+encodeURIComponent(songCode);
+    });
+  }
 }
+
+// ════════════════════════════════════════════════════════════════
+// INIT
+// ════════════════════════════════════════════════════════════════
+window.addEventListener('DOMContentLoaded',function(){
+  wire();
+
+  fetch('VSAE_Data_Final.csv')
+    .then(function(r){
+      if(!r.ok) throw new Error('CSV returned status '+r.status+'. Make sure VSAE_Data_Final.csv is in the same folder as index.html and GitHub Pages is enabled.');
+      return r.text();
+    })
+    .then(function(text){
+      var raw=loadVSAEData(text);
+      if(!raw.length) throw new Error('CSV parsed to 0 songs \u2014 check the file format.');
+      allSongs=engineerFeatures(raw);
+
+      document.getElementById('loading').style.display='none';
+      document.getElementById('app-shell').style.display='block';
+
+      buildChips('chips-vr',uniq(allSongs.map(function(s){return s.VocalRange;})));
+      buildChips('chips-class',uniq(allSongs.map(function(s){return s.Class;})));
+      buildChips('chips-lang',['English','French','German','Spanish','Latin','Italian']);
+
+      var ref=document.getElementById('sel-reference');
+      ref.innerHTML='';
+      var labeled=allSongs.map(function(s,i){
+        return{i:i,label:[s.Title,s.VocalRange,'Class '+s.Class,s.Language].join(' | ')};
+      }).sort(function(a,b){return a.label.localeCompare(b.label);});
+      labeled.forEach(function(item){
+        var o=document.createElement('option');
+        o.value=String(item.i);o.textContent=item.label;
+        ref.appendChild(o);
+      });
+
+      renderOverview(allSongs);
+      runPipeline();
+    })
+    .catch(function(err){
+      document.getElementById('loading').style.display='none';
+      var box=document.getElementById('error-msg');
+      box.style.display='block';
+      box.textContent=err.message+'\n\nTo deploy on GitHub Pages:\n1. Commit index.html and VSAE_Data_Final.csv to the same folder in your repo\n2. Go to repo Settings \u2192 Pages \u2192 Branch: main \u2192 Save\n3. Visit https://sp02028.github.io/VSAE-Recommendations/';
+    });
+});
