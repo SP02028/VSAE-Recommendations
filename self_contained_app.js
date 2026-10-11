@@ -821,12 +821,10 @@ function runPipeline(){
         if(sd!==0) return sd;
         return(a._rangeCenterDist||0)-(b._rangeCenterDist||0);
       });
-    }
-  } else {
-    if(hintLow) hintLow.textContent='';
-    if(hintHigh) hintHigh.textContent='';
-    if(hintBoth) hintBoth.textContent='';
-    if(simEnabled){
+    }else if(simEnabled){
+      // No usable range yet: rank by similarity alone. (This used to sit in
+      // an else-branch for the old range checkbox, which became unreachable
+      // once range matching was always on.)
       displaySongs.sort(function(a,b){return(b._similarityScore||0)-(a._similarityScore||0);});
     }
   }
