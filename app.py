@@ -26,7 +26,7 @@ from vsae_contentbased import (
     get_recommendation_scores,
     scale_to_best,
 )
-from vsae_data import RANGE_MIDI_DEFAULTS, load_and_engineer, note_to_midi
+from vsae_data import load_and_engineer, note_to_midi
 
 REGISTRATION_URL = "https://aveschoir.org/Vocal-Solo-Event"
 
@@ -93,11 +93,6 @@ def should_transpose_for_men(selected_ranges: list[str]) -> bool:
     """Vocal All songs drop an octave only when every selected voice is male;
     any female voice (e.g. Alto + Tenor for a contralto) keeps written pitch."""
     return bool(selected_ranges) and all(r.casefold() in MALE_RANGES for r in selected_ranges)
-
-
-def vocal_range_bounds(vocal_range: str) -> tuple[int, int] | None:
-    bounds = RANGE_MIDI_DEFAULTS.get(vocal_range)
-    return (bounds['low'], bounds['high']) if bounds else None
 
 
 def transpose_note_label(note_str: str, octave_shift: int) -> str:
@@ -319,19 +314,11 @@ with tab_find:
     # ── Filters ──
     filtered = df.copy()
     transpose_for_men = should_transpose_for_men(selected_ranges)
-    # Vocal All isn't a voice: those songs are included whenever voices are
-    # narrowed, kept if they overlap the chosen voices (an octave lower for men).
+    # Songs come in by their voice tag; Vocal All isn't a voice, so those songs
+    # are included whenever voices are narrowed. Fit is decided by the singer's
+    # own notes (Range fit), not by per-voice note limits.
     if selected_ranges and len(selected_ranges) < len(range_options):
         filtered = filtered[filtered['VocalRange'].isin(selected_ranges + ['Vocal All'])]
-        all_bounds = [b for b in (vocal_range_bounds(r) for r in selected_ranges) if b]
-        if all_bounds:
-            low_bound, high_bound = min(b[0] for b in all_bounds), max(b[1] for b in all_bounds)
-            low_midi, high_midi = filtered['LowestNote_MIDI'], filtered['HighestNote_MIDI']
-            if transpose_for_men:
-                vocal_all_mask = filtered['VocalRange'] == 'Vocal All'
-                low_midi = low_midi.where(~vocal_all_mask, low_midi - 12)
-                high_midi = high_midi.where(~vocal_all_mask, high_midi - 12)
-            filtered = filtered[(low_midi <= high_bound) & (high_midi >= low_bound)]
     if selected_class:
         filtered = filtered[filtered['Class'].isin(selected_class)]
     if selected_lang:

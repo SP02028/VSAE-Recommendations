@@ -37,17 +37,6 @@ def note_to_midi(note_str):
         return None
     return (octave + 1) * 12 + PITCH_CLASS[pitch]
 
-# Median MIDI fallbacks per vocal range (used when notes are missing)
-RANGE_MIDI_DEFAULTS = {
-    'Soprano':       {'high': 79, 'low': 65},   # G5 / F4
-    'Mezzo Soprano': {'high': 77, 'low': 62},   # F5 / D4
-    'Alto':          {'high': 77, 'low': 60},   # F5 / C4
-    'Tenor':         {'high': 76, 'low': 60},   # E5 / C4
-    'Baritone':      {'high': 64, 'low': 48},   # E4 / C3
-    'Bass':          {'high': 62, 'low': 43},   # D4 / G2
-    'Vocal All':     {'high': 77, 'low': 60},   # F5 / C4
-}
-
 ERA_ORDER = ['Renaissance', 'Baroque', 'Classical', 'Romantic', 'Modern']
 
 def era_from_period(period_str):
@@ -102,14 +91,8 @@ def load_and_engineer(csv_path: str) -> pd.DataFrame:
     df['HighestNote_MIDI'] = df['Highest Note'].apply(note_to_midi)
     df['LowestNote_MIDI']  = df['Lowest Note'].apply(note_to_midi)
 
-    # Impute missing notes with per-VocalRange medians
-    for idx, row in df.iterrows():
-        vr = str(row.get('VocalRange', 'Vocal All')).strip()
-        defaults = RANGE_MIDI_DEFAULTS.get(vr, RANGE_MIDI_DEFAULTS['Vocal All'])
-        if pd.isna(row['HighestNote_MIDI']):
-            df.at[idx, 'HighestNote_MIDI'] = defaults['high']
-        if pd.isna(row['LowestNote_MIDI']):
-            df.at[idx, 'LowestNote_MIDI'] = defaults['low']
+    # Missing notes stay NaN (no per-voice guess): those songs are listed under
+    # "Also worth a look" and are never scored on range.
 
     df['RangeSpan'] = (df['HighestNote_MIDI'] - df['LowestNote_MIDI']).clip(lower=0)
 

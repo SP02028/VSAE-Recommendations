@@ -131,11 +131,6 @@ function loadVSAEData(text){
 }
 
 var ERA_KEYS=['Renaissance','Baroque','Classical','Romantic','Modern'];
-var VR_DEFAULTS={
-  Soprano:{high:79,low:65},'Mezzo Soprano':{high:77,low:62},
-  Alto:{high:77,low:60},Tenor:{high:76,low:60},
-  Baritone:{high:64,low:48},Bass:{high:62,low:43},'Vocal All':{high:77,low:60}
-};
 
 function inferEra(tp){
   if(!tp||typeof tp!=='string') return 'Unknown';
@@ -156,9 +151,10 @@ function engineerFeatures(songs){
   songs.forEach(function(s){
     s.Language=titleCase(normLang(s.Language));  // 'English?', 'italian' → 'English', 'Italian'
     s.Era=inferEra(s['Time Period']);
-    var d=VR_DEFAULTS[s.VocalRange]||null;
-    var hi=noteToMidi(s['Highest Note']); if(hi==null&&d) hi=d.high; s.HighestNote_MIDI=hi;
-    var lo=noteToMidi(s['Lowest Note']);  if(lo==null&&d) lo=d.low;  s.LowestNote_MIDI=lo;
+    // Missing notes stay null (no per-voice guess): those songs are listed
+    // under "Also worth a look" and are never scored on range.
+    var hi=noteToMidi(s['Highest Note']); s.HighestNote_MIDI=hi;
+    var lo=noteToMidi(s['Lowest Note']);  s.LowestNote_MIDI=lo;
     s.RangeSpan=(hi!=null&&lo!=null)?Math.max(0,hi-lo):0;
     var rt=runtimeToSeconds(s['Runtime of Song']); s.RuntimeSeconds=rt; if(rt!=null) rts.push(rt);
     var ck={A:1,B:2,C:3}; s.ClassOrdinal=ck[String(s.Class||'').trim().toUpperCase()]||2;
@@ -466,11 +462,6 @@ function collapseVersions(rankedLists,pool,useRange){
 // ════════════════════════════════════════════════════════════════
 // FILTERING
 // ════════════════════════════════════════════════════════════════
-var RANGE_BOUNDS={
-  Soprano:{low:65,high:79},'Mezzo Soprano':{low:62,high:77},
-  Alto:{low:60,high:77},Tenor:{low:60,high:76},
-  Baritone:{low:48,high:64},Bass:{low:43,high:62},'Vocal All':{low:60,high:77}
-};
 var MALE_VR=['tenor','baritone','bass'];
 
 // Vocal All songs are written at treble pitch. Men sing them an octave
@@ -481,26 +472,15 @@ function shouldTransposeForMen(selectedRanges){
   return selectedRanges.length>0&&selectedRanges.every(function(v){return MALE_VR.indexOf(v.toLowerCase())>=0;});
 }
 
-// Vocal All isn't a voice chip: those songs are included whenever the
-// student narrows the voices, and kept if they overlap the combined range
-// of the selected voices (an octave lower for men).
+// Songs come in by their voice tag. Vocal All isn't a voice chip: those
+// songs are included whenever the student narrows the voices. Whether a song
+// suits the singer is decided by their own notes (Range fit), not by
+// per-voice note limits.
 function applyVocalRangeFilter(songs,selectedRanges){
   if(!selectedRanges.length||selectedRanges.length>=VOICE_LADDER.length) return songs;
-  var set={'Vocal All':1},lo=Infinity,hi=-Infinity;
-  selectedRanges.forEach(function(v){
-    set[v]=1;
-    var b=RANGE_BOUNDS[v];
-    if(b){lo=Math.min(lo,b.low);hi=Math.max(hi,b.high);}
-  });
-  var isMale=shouldTransposeForMen(selectedRanges);
-  return songs.filter(function(s){
-    if(!set[s.VocalRange]) return false;
-    if(!isFinite(lo)) return true;
-    var sHi=s.HighestNote_MIDI,sLo=s.LowestNote_MIDI;
-    if(sHi==null||sLo==null) return false;
-    if(isMale&&s.VocalRange==='Vocal All'){sLo-=12;sHi-=12;}
-    return sLo<=hi&&sHi>=lo;
-  });
+  var set={'Vocal All':1};
+  selectedRanges.forEach(function(v){set[v]=1;});
+  return songs.filter(function(s){return set[s.VocalRange];});
 }
 
 // ════════════════════════════════════════════════════════════════
