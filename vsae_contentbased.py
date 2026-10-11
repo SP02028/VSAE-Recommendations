@@ -4,7 +4,7 @@ vsae_contentbased.py
 Content-based recommendation engine for VSAE songs.
 
 Personalized PageRank over a song–attribute graph (mirrors the JS version in
-self_contained_app.js — keep the constants in sync):
+self_contained_app.js; weights live in similarity_config.json):
 
   - Nodes are songs plus one node per attribute value (composer, language,
     genre tag, class, era, voice, range-span bin, runtime bin).
@@ -16,6 +16,8 @@ self_contained_app.js — keep the constants in sync):
   - Score = lift = PPR(song) / global PageRank(song).
 """
 
+import json
+import os
 import re
 
 import numpy as np
@@ -23,24 +25,40 @@ import pandas as pd
 
 from vsae_data import ERA_ORDER, note_to_midi, normalize_language, runtime_to_seconds
 
-RELATION_WEIGHTS = {
-    'Composer': 0.7,
-    'Language': 1.0,
-    'Genre': 0.8,
-    'Era': 0.6,
-    'VocalRange': 0.8,
-    'RangeSpan': 0.4,
-    'Runtime': 0.3,
-}
-RELATION_LABELS = {
-    'Composer': 'composer', 'Language': 'language', 'Genre': 'genre',
-    'Era': 'era', 'VocalRange': 'voice',
-    'RangeSpan': 'range span', 'Runtime': 'length',
-}
+# Weights and walk settings are shared with self_contained_app.js via
+# similarity_config.json so the two versions can't drift.
+CONFIG_PATH = os.environ.get(
+    'VSAE_SIMILARITY_CONFIG', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'similarity_config.json')
+)
+
+
+def _load_config(path: str) -> dict:
+    with open(path, encoding='utf-8') as f:
+        cfg = json.load(f)
+
+    def num(value, name, lo, hi):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not lo <= value <= hi:
+            raise ValueError(f"{path}: {name} must be a number from {lo} to {hi}.")
+        return float(value)
+
+    relations = cfg.get('relations') or {}
+    for key in ('Composer', 'Language', 'Genre', 'Era', 'VocalRange', 'RangeSpan', 'Runtime'):
+        if key not in relations:
+            raise ValueError(f"{path}: relations.{key} is missing.")
+        num(relations[key].get('weight'), f'relations.{key}.weight', 0, 100)
+    num(cfg.get('ppr_restart'), 'ppr_restart', 0.01, 0.99)
+    num(cfg.get('neighbor_share'), 'neighbor_share', 0, 10)
+    num(cfg.get('rarity_damping'), 'rarity_damping', 0, 1)
+    return cfg
+
+
+_CONFIG = _load_config(CONFIG_PATH)
+RELATION_WEIGHTS = {k: float(v['weight']) for k, v in _CONFIG['relations'].items()}
+RELATION_LABELS = {k: str(v.get('label') or k.lower()) for k, v in _CONFIG['relations'].items()}
 ORDINAL_RELATIONS = {'Era', 'VocalRange', 'RangeSpan', 'Runtime'}
-PPR_RESTART = 0.25
-NEIGHBOR_SHARE = 0.25
-RARITY_DAMPING = 0.75
+PPR_RESTART = float(_CONFIG['ppr_restart'])
+NEIGHBOR_SHARE = float(_CONFIG['neighbor_share'])
+RARITY_DAMPING = float(_CONFIG['rarity_damping'])
 
 VOICE_LADDER = ['Soprano', 'Mezzo Soprano', 'Alto', 'Tenor', 'Baritone', 'Bass']
 SPAN_BINS = [(9, 'narrow range'), (12, 'moderate range'), (15, 'wide range'), (99, 'very wide range')]

@@ -59,4 +59,11 @@ no code changes required. The feature pipeline auto-handles:
 4. Divide each song's PageRank mass by its degree (removes "hub" bias), then scale so the
    best match among the currently filtered songs is 1.00.
 
+The relation weights and walk settings (restart probability, neighbour share,
+rarity damping β) live in **`similarity_config.json`**, which both the website
+and the Python module read. Edit them there only, and deploy the file next to
+`index.html`. If it is missing or invalid, the website switches similarity off
+(the rest of the page keeps working); the Python module raises an error naming
+the bad setting.
+
 `repertoire_mode='different'` returns `1 - score`.

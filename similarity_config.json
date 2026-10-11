@@ -1,0 +1,18 @@
+{
+  "_about": "Similarity settings shared by self_contained_app.js (website) and vsae_contentbased.py (Streamlit). Edit here only. Deploy this file next to index.html.",
+  "relations": {
+    "Composer":   {"weight": 0.7, "label": "composer"},
+    "Language":   {"weight": 1.0, "label": "language"},
+    "Genre":      {"weight": 0.8, "label": "genre"},
+    "Era":        {"weight": 0.6, "label": "era"},
+    "VocalRange": {"weight": 0.8, "label": "voice"},
+    "RangeSpan":  {"weight": 0.4, "label": "range span"},
+    "Runtime":    {"weight": 0.3, "label": "length"}
+  },
+  "_ppr_restart": "Chance each step that the walk jumps back to the reference song (0-1). Higher = stays closer to direct matches.",
+  "ppr_restart": 0.25,
+  "_neighbor_share": "How strongly neighbouring values connect (Baroque-Classical, Soprano-Mezzo), relative to how many songs each value has.",
+  "neighbor_share": 0.25,
+  "_rarity_damping": "Beta (0-1). Each song-to-value link is scaled by (songs with that value)^beta. 0 = full IDF effect (rare values dominate), 1 = rarity ignored. 0.75 was chosen by checking reference songs.",
+  "rarity_damping": 0.75
+}

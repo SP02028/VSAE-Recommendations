@@ -201,24 +201,42 @@ function isMissingData(s){
 // Score = lift = PPR(song) / PageRank(song). Dividing by global PageRank
 // removes the advantage of songs whose attributes are simply common.
 
-// Relation weights. The "Compare songs by" checkboxes switch these on/off.
-var RELATIONS={
-  Composer:  {weight:0.7, label:'composer'},
-  Language:  {weight:1.0, label:'language'},
-  Genre:     {weight:0.8, label:'genre'},
-  Era:       {weight:0.6, label:'era'},
-  VocalRange:{weight:0.8, label:'voice'},
-  RangeSpan: {weight:0.4, label:'range span'},
-  Runtime:   {weight:0.3, label:'length'}
-};
-var PPR_RESTART=0.25;
-var NEIGHBOR_SHARE=0.25;  // how strongly adjacent ordinal values connect
-// Rarity damping β: each song→value edge is scaled by (songs with that
-// value)^β. β=0 is the walk's raw IDF effect, where one composer with three
-// songs outweighs language, class and genre together; β=1 removes rarity
-// entirely. 0.75 was chosen by checking reference songs: at 0.5 a composer
-// with three songs still put a Mezzo art song first for a Bass folk song.
-var RARITY_DAMPING=0.75;
+// Relation weights and walk settings come from similarity_config.json, shared
+// with vsae_contentbased.py so the two versions can't drift. The "Compare
+// songs by" checkboxes switch relations on/off. See that file for what each
+// setting does (rarity_damping is the β that tames rare composers).
+var RELATIONS=null,PPR_RESTART=null,NEIGHBOR_SHARE=null,RARITY_DAMPING=null;
+var SIMILARITY_CONFIG_URL='similarity_config.json';
+
+// Throws with a readable message if the file is malformed.
+function applySimilarityConfig(cfg){
+  function num(v,name,lo,hi){
+    if(typeof v!=='number'||!isFinite(v)||v<lo||v>hi) throw new Error(name+' must be a number from '+lo+' to '+hi+'.');
+    return v;
+  }
+  if(!cfg||typeof cfg.relations!=='object') throw new Error('missing "relations".');
+  var rel={};
+  ['Composer','Language','Genre','Era','VocalRange','RangeSpan','Runtime'].forEach(function(k){
+    var r=cfg.relations[k];
+    if(!r) throw new Error('relations.'+k+' is missing.');
+    rel[k]={weight:num(r.weight,'relations.'+k+'.weight',0,100),label:String(r.label||k.toLowerCase())};
+  });
+  RELATIONS=rel;
+  PPR_RESTART=num(cfg.ppr_restart,'ppr_restart',0.01,0.99);
+  NEIGHBOR_SHARE=num(cfg.neighbor_share,'neighbor_share',0,10);
+  RARITY_DAMPING=num(cfg.rarity_damping,'rarity_damping',0,1);
+}
+
+// Without a usable config, similarity is switched off but the rest of the
+// page (filters, range matching, song choice) keeps working.
+function disableSimilarity(reason){
+  var chk=document.getElementById('chk-similarity');
+  chk.checked=false;chk.disabled=true;
+  document.getElementById('sim-block').classList.remove('open');
+  var hint=document.getElementById('sim-unavailable');
+  if(hint){hint.textContent='Similarity ranking is unavailable right now ('+String(reason).replace(/\.$/,'')+').';hint.style.display='block';}
+  console.error('similarity_config.json: '+reason);
+}
 
 var VOICE_LADDER=['Soprano','Mezzo Soprano','Alto','Tenor','Baritone','Bass'];
 var SPAN_BINS=[{max:9,label:'narrow range'},{max:12,label:'moderate range'},{max:15,label:'wide range'},{max:99,label:'very wide range'}];
@@ -997,12 +1015,21 @@ function applyPreviousSongCode(){
 function initializeSongSelector(){
   wire();
 
-  fetch('VSAE_Data_Final.csv')
-    .then(function(r){
+  // no-cache: revalidate so a retuned config takes effect without a version bump
+  var configLoaded=fetch(SIMILARITY_CONFIG_URL,{cache:'no-cache'})
+    .then(function(r){if(!r.ok) throw new Error('status '+r.status);return r.json();})
+    .then(function(cfg){applySimilarityConfig(cfg);return true;})
+    .catch(function(err){disableSimilarity(err.message);return false;});
+
+  Promise.all([
+    fetch('VSAE_Data_Final.csv').then(function(r){
       if(!r.ok) throw new Error('CSV returned status '+r.status+'. Make sure VSAE_Data_Final.csv is in the same folder as index.html.');
       return r.text();
-    })
-    .then(function(text){
+    }),
+    configLoaded
+  ])
+    .then(function(results){
+      var text=results[0];
       var raw=loadVSAEData(text);
       if(!raw.length) throw new Error('CSV parsed to 0 songs — check the file format.');
       allSongs=engineerFeatures(raw);
@@ -1026,7 +1053,7 @@ function initializeSongSelector(){
       });
 
       applyPreviousVocalRange();
-      applyPreviousSongCode();
+      if(results[1]) applyPreviousSongCode();
 
       renderOverview(allSongs);
       runPipeline();
