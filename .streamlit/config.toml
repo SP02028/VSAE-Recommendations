@@ -1,0 +1,8 @@
+# Colours from the Aves Choir Website Style Guide (Oct 2026)
+[theme]
+base = "light"
+primaryColor = "#03553E"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#EEEFF0"
+textColor = "#333333"
+font = "sans serif"
