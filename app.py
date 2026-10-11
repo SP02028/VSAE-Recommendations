@@ -471,6 +471,9 @@ with tab1:
     st.divider()
 
     top_k = st.slider("Number of songs to show", 5, 50, 10)
+    if transpose_for_men:
+        st.info("Heads up! Vocal All music is written in treble clef, so you'll need to sing it an octave lower "
+                "than written. The note ranges shown for Vocal All songs already account for this.")
     display['Note Range'] = display.apply(
         lambda row: note_range_label(row, transpose_vocal_all=transpose_for_men),
         axis=1,
@@ -486,6 +489,7 @@ with tab1:
         'Language',
         'Genre',
         'Era',
+        'Key',
         'Note Range',
         'Runtime',
     ]
@@ -524,6 +528,7 @@ with tab1:
         'Language',
         'Genre',
         'Era',
+        'Key',
         'Note Range',
         'Runtime',
     ]

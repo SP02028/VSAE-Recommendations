@@ -539,7 +539,7 @@ function noteRangeLabel(song,transposeVocalAll){
 // ════════════════════════════════════════════════════════════════
 // TABLE RENDERING
 // ════════════════════════════════════════════════════════════════
-var DISPLAY_COLS=['Title','Composer','VocalRange','Class','Language','Genre','Era','Note Range','Runtime'];
+var DISPLAY_COLS=['Title','Composer','VocalRange','Class','Language','Genre','Era','Key','Note Range','Runtime'];
 var COL_LABELS={VocalRange:'Vocal range','Note Range':'Note range',RangeSpan:'Range span',RuntimeSeconds:'Runtime (s)'};
 function colLabel(c){return COL_LABELS[c]||c;}
 
@@ -563,7 +563,7 @@ function renderTable(songs,containerId,transposeForMen,topK){
     html+='<tr><td class="num">'+(i+1)+'</td>';
     var others=(s._otherKeys||[]).map(versionLabel);
     html+='<td>'+esc(s.Title||'')+(others.length?'<div class="also-in">Also in keys: '+esc(others.join(' \u00b7 '))+'</div>':'')+'</td>';
-    ['Composer','VocalRange','Class','Language','Genre','Era'].forEach(function(c){
+    ['Composer','VocalRange','Class','Language','Genre','Era','Key'].forEach(function(c){
       var v=s[c]||'';
       if(c==='VocalRange'&&transposeForMen&&v==='Vocal All') v='Vocal All (octave lower)';
       html+='<td>'+esc(v)+'</td>';
@@ -837,6 +837,9 @@ function runPipeline(){
 
   var collapsed=collapseVersions([displaySongs,missingSongs],basedFiltered,lowMidi!=null&&highMidi!=null&&rangeEnabled);
   displaySongs=collapsed[0];missingSongs=collapsed[1];
+
+  var octaveNote=document.getElementById('octave-note');
+  if(octaveNote) octaveNote.style.display=transposeForMen?'block':'none';
 
   renderTable(displaySongs,'tbl-main',transposeForMen,topK);
   renderTable(missingSongs,'tbl-missing',transposeForMen,topK);
