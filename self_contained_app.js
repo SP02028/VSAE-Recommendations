@@ -644,17 +644,17 @@ function wire(){
 // ════════════════════════════════════════════════════════════════
 // INIT
 // ════════════════════════════════════════════════════════════════
-window.addEventListener('DOMContentLoaded',function(){
+function initializeSongSelector(){
   wire();
 
   fetch('VSAE_Data_Final.csv')
     .then(function(r){
-      if(!r.ok) throw new Error('CSV returned status '+r.status+'. Make sure VSAE_Data_Final.csv is in the same folder as index.html and GitHub Pages is enabled.');
+      if(!r.ok) throw new Error('CSV returned status '+r.status+'. Make sure VSAE_Data_Final.csv is in the same folder as index.html.');
       return r.text();
     })
     .then(function(text){
       var raw=loadVSAEData(text);
-      if(!raw.length) throw new Error('CSV parsed to 0 songs \u2014 check the file format.');
+      if(!raw.length) throw new Error('CSV parsed to 0 songs — check the file format.');
       allSongs=engineerFeatures(raw);
 
       document.getElementById('loading').style.display='none';
@@ -682,6 +682,14 @@ window.addEventListener('DOMContentLoaded',function(){
       document.getElementById('loading').style.display='none';
       var box=document.getElementById('error-msg');
       box.style.display='block';
-      box.textContent=err.message+'\n\nTo deploy on GitHub Pages:\n1. Commit index.html and VSAE_Data_Final.csv to the same folder in your repo\n2. Go to repo Settings \u2192 Pages \u2192 Branch: main \u2192 Save\n3. Visit https://sp02028.github.io/VSAE-Recommendations/';
+      box.textContent=err.message;
     });
-});
+}
+
+// app.js injects this script after the page has loaded, so
+// DOMContentLoaded may already have fired (fix from Mark, Oct 2026).
+if(document.readyState==='loading'){
+  document.addEventListener('DOMContentLoaded',initializeSongSelector);
+}else{
+  initializeSongSelector();
+}
