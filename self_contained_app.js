@@ -353,6 +353,62 @@ function baseTitle(t){
 }
 
 // ════════════════════════════════════════════════════════════════
+// ONE ROW PER SONG IN RECOMMENDATIONS
+// ════════════════════════════════════════════════════════════════
+// Many songs are listed once per key/voicing (e.g. "Silent Noon (High)" and
+// "Silent Noon (Low)"). Recommendations keep only the best-ranked version so
+// each slot is a different song; the other versions are listed alongside it.
+// Composer is part of the key because some titles are different arrangements
+// (e.g. Wayfaring Stranger by Walters vs. Niles).
+function songGroupKey(s){
+  return baseTitle(s.Title).toLowerCase()+'|'+String(s.Composer||'').trim().toLowerCase();
+}
+
+// "Also in" lists other versions by key (falls back to the title's
+// parenthetical, e.g. "Low", when a row has no key).
+function versionLabel(s){
+  var k=String(s.Key||'').trim();
+  if(k) return k;
+  var m=String(s.Title||'').match(/\(([^)]*)\)\s*$/);
+  return m?m[1]:(s.VocalRange||'other version');
+}
+
+// When range matching is on, the version shown is the one that fits best:
+// fewest semitones outside the range, then the one whose middle is closest
+// to the middle of the singer's range (e.g. for B3–A5, Amarilli High
+// D4–E5 rather than Low B3–C#5, which sits at the bottom of the range).
+function bestFitVersion(group){
+  var best=null;
+  group.forEach(function(s){
+    if(s._rangeOut==null) return;
+    if(!best||s._rangeOut<best._rangeOut||
+       (s._rangeOut===best._rangeOut&&s._rangeCenterDist<best._rangeCenterDist)) best=s;
+  });
+  return best;
+}
+
+// `ranked` lists are already sorted best-first. Returns them with later
+// versions of an already-shown song removed and each kept song's
+// remaining versions (from `pool`) attached as _otherKeys.
+function collapseVersions(rankedLists,pool,useRange){
+  var groups={};
+  pool.forEach(function(s){var k=songGroupKey(s);(groups[k]=groups[k]||[]).push(s);});
+  var rep={};
+  if(useRange) Object.keys(groups).forEach(function(k){var b=bestFitVersion(groups[k]);if(b) rep[k]=b;});
+  var seen={};
+  return rankedLists.map(function(list){
+    return list.filter(function(s){
+      var k=songGroupKey(s);
+      if(rep[k]&&rep[k]!==s) return false;
+      if(seen[k]) return false;
+      seen[k]=1;
+      s._otherKeys=groups[k].filter(function(o){return o!==s;});
+      return true;
+    });
+  });
+}
+
+// ════════════════════════════════════════════════════════════════
 // FILTERING
 // ════════════════════════════════════════════════════════════════
 var RANGE_BOUNDS={
@@ -388,18 +444,30 @@ function applyVocalRangeFilter(songs,selectedRanges){
 // ════════════════════════════════════════════════════════════════
 // RANGE MATCH SCORING
 // ════════════════════════════════════════════════════════════════
+// A song fits when every note is inside the singer's range. _rangeOut is
+// how many semitones the song goes past the range (below + above), so songs
+// that fit always sort first. (The old score was overlap / singer's span,
+// which gave a song wider than the range at both ends a perfect 100.)
 function scoreRangeMatch(songs,userLow,userHigh,isMale){
   var lo=Math.min(userLow,userHigh),hi=Math.max(userLow,userHigh);
-  var span=Math.max(1,hi-lo);
   songs.forEach(function(s){
     var sLo=s.LowestNote_MIDI,sHi=s.HighestNote_MIDI;
-    if(sLo==null||sHi==null){s._rangeScore=0;return;}
+    if(sLo==null||sHi==null){s._rangeOut=null;return;}
     if(isMale&&s.VocalRange==='Vocal All'){sLo-=12;sHi-=12;}
-    var overlap=Math.max(0,Math.min(sHi,hi)-Math.max(sLo,lo));
-    var score=(overlap/span)*100;
-    if(sLo>=lo&&sHi<=hi) score=100;
-    s._rangeScore=Math.round(Math.max(0,Math.min(100,score)));
+    s._rangeBelow=Math.max(0,lo-sLo);
+    s._rangeAbove=Math.max(0,sHi-hi);
+    s._rangeOut=s._rangeBelow+s._rangeAbove;
+    s._rangeCenterDist=Math.abs((sLo+sHi)/2-(lo+hi)/2);
   });
+}
+
+function rangeFitLabel(s){
+  if(s._rangeOut==null) return '';
+  if(s._rangeOut===0) return 'Fits';
+  var parts=[];
+  if(s._rangeBelow) parts.push(s._rangeBelow+' too low');
+  if(s._rangeAbove) parts.push(s._rangeAbove+' too high');
+  return parts.join(', ')+' (semitones)';
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -437,7 +505,9 @@ function renderTable(songs,containerId,transposeForMen,topK){
   if(!songs||!songs.length){el.innerHTML='<div class="empty-row">No songs match the current filters.</div>';return;}
   var rows=songs.slice(0,topK||songs.length);
   var showSimilarity=rows.some(function(s){return s._similarityScore!==null&&s._similarityScore!==undefined;});
+  var showFit=rows.some(function(s){return s._rangeOut!=null;});
   var cols=DISPLAY_COLS.slice();
+  if(showFit) cols.push('Range fit');
   if(showSimilarity) cols.push('Similarity','Why');
   var html='<table><thead><tr><th>#</th>';
   cols.forEach(function(c){html+='<th>'+esc(colLabel(c))+'</th>';});
@@ -447,10 +517,15 @@ function renderTable(songs,containerId,transposeForMen,topK){
     if(!rt||rt.toUpperCase()==='N/A'||rt.toUpperCase()==='NAN') rt='Missing';
     var noteRange=noteRangeLabel(s,transposeForMen);
     html+='<tr><td class="num">'+(i+1)+'</td>';
-    ['Title','Composer','VocalRange','Class','Language','Genre','Era'].forEach(function(c){
+    var others=(s._otherKeys||[]).map(versionLabel);
+    html+='<td>'+esc(s.Title||'')+(others.length?'<div class="also-in">Also in keys: '+esc(others.join(' \u00b7 '))+'</div>':'')+'</td>';
+    ['Composer','VocalRange','Class','Language','Genre','Era'].forEach(function(c){
       html+='<td>'+esc(s[c]||'')+'</td>';
     });
     html+='<td>'+esc(noteRange)+'</td><td>'+esc(rt)+'</td>';
+    if(showFit){
+      html+='<td class="'+(s._rangeOut===0?'fit-ok':'fit-out')+'">'+esc(rangeFitLabel(s))+'</td>';
+    }
     if(showSimilarity){
       html+='<td>'+esc(s._similarityScore==null?'':s._similarityScore.toFixed(2))+'</td>';
       html+='<td class="why">'+esc((s._why||[]).join(' · '))+'</td>';
@@ -657,13 +732,14 @@ function runPipeline(){
     if(simHint) simHint.textContent='';
   }
 
+  allSongs.forEach(function(s){s._rangeOut=null;});
   var basedFiltered=filtered.slice();
 
   var displaySongs=basedFiltered.filter(function(s){return!isMissingData(s);});
   var missingSongs=basedFiltered.filter(function(s){return isMissingData(s);});
 
-  var chkRange=document.getElementById('chk-range-match');
-  var rangeEnabled=chkRange&&chkRange.checked;
+  // Range matching applies whenever both notes are entered.
+  var rangeEnabled=true;
   var lowMidi=null,highMidi=null;
   var hintLow=document.getElementById('hint-low');
   var hintHigh=document.getElementById('hint-high');
@@ -679,15 +755,17 @@ function runPipeline(){
     if(hintHigh) hintHigh.innerHTML=highStr?(highMidi!=null?'<span class="parse-ok">MIDI '+highMidi+'</span>':'<span class="parse-err">Could not parse \''+esc(highStr)+'\'.</span>'):'';
     if(hintBoth){
       if(lowMidi!=null&&highMidi!=null) hintBoth.textContent='';
-      else hintBoth.textContent='Enter both notes to score range matches.';
+      else hintBoth.textContent=(lowStr||highStr)?'Enter both notes to sort by range fit.':'';
     }
 
     if(lowMidi!=null&&highMidi!=null){
       scoreRangeMatch(displaySongs,lowMidi,highMidi,transposeForMen);
       displaySongs.sort(function(a,b){
-        var rd=(b._rangeScore||0)-(a._rangeScore||0);
+        var rd=(a._rangeOut==null?999:a._rangeOut)-(b._rangeOut==null?999:b._rangeOut);
         if(rd!==0) return rd;
-        return(b._similarityScore||0)-(a._similarityScore||0);
+        var sd=(b._similarityScore||0)-(a._similarityScore||0);
+        if(sd!==0) return sd;
+        return(a._rangeCenterDist||0)-(b._rangeCenterDist||0);
       });
     }
   } else {
@@ -703,6 +781,9 @@ function runPipeline(){
     missingSongs.sort(function(a,b){return(b._similarityScore||0)-(a._similarityScore||0);});
   }
 
+  var collapsed=collapseVersions([displaySongs,missingSongs],basedFiltered,lowMidi!=null&&highMidi!=null&&rangeEnabled);
+  displaySongs=collapsed[0];missingSongs=collapsed[1];
+
   renderTable(displaySongs,'tbl-main',transposeForMen,topK);
   renderTable(missingSongs,'tbl-missing',transposeForMen,topK);
 
@@ -717,14 +798,17 @@ function runPipeline(){
     placeholder.textContent='\u2014 Select a song \u2014';
     selChosen.appendChild(placeholder);
 
+    // Every version of each recommended song is selectable, so students
+    // can still register the key that suits them.
     var recommended=displaySongs.slice(0,topK).concat(missingSongs.slice(0,topK));
-    for(var ri=0;ri<recommended.length;ri++){
-      var song=recommended[ri];
-      var opt=document.createElement('option');
-      opt.value=String(song.Song_Code||'');
-      opt.textContent=song.Title+' | '+song.VocalRange+' | Class '+(song.Class||'')+' | '+(song.Language||'');
-      selChosen.appendChild(opt);
-    }
+    recommended.forEach(function(song){
+      [song].concat(song._otherKeys||[]).forEach(function(v,vi){
+        var opt=document.createElement('option');
+        opt.value=String(v.Song_Code||'');
+        opt.textContent=(vi?'\u00a0\u00a0\u21b3 ':'')+v.Title+' | '+v.VocalRange+' | Class '+(v.Class||'')+(v.Key?' | Key '+v.Key:'')+' | '+(v.Language||'');
+        selChosen.appendChild(opt);
+      });
+    });
 
     if(prev){
       var stillExists=false;
@@ -757,13 +841,6 @@ function wire(){
   chkSim.addEventListener('change',function(){
     simBlock.classList.toggle('open',chkSim.checked);
     if(!chkSim.checked){allSongs.forEach(function(s){s._similarityScore=null;});_similarityKey=null;}
-    runPipeline();
-  });
-
-  var chkRange=document.getElementById('chk-range-match');
-  var rangeBlock=document.getElementById('range-block');
-  chkRange.addEventListener('change',function(){
-    rangeBlock.classList.toggle('open',chkRange.checked);
     runPipeline();
   });
 

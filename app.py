@@ -373,7 +373,7 @@ with tab1:
     st.divider()
 
     st.subheader("🎤 Match Your Vocal Range (Optional)")
-    use_range_match = st.checkbox("Sort by how well songs match my vocal range")
+    use_range_match = True  # applies whenever both notes are entered
 
     note_low = None
     note_high = None

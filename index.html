@@ -131,7 +131,10 @@ tbody td{padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowra
 tbody tr:nth-child(even) td{background:#F7F8F8;}
 tbody tr:hover td{background:#E9F3EE;}
 td.num{color:var(--muted);}
+td.fit-ok{color:var(--ok);font-weight:500;}
+td.fit-out{color:var(--error);}
 .why{white-space:normal;min-width:180px;color:var(--muted);font-size:13px;}
+.also-in{font-size:12px;color:var(--muted);margin-top:2px;}
 .empty-row{padding:40px;text-align:center;color:var(--muted);}
 
 /* ── metric cards ── */
@@ -256,12 +259,8 @@ td.num{color:var(--muted);}
       <!-- Range match section -->
       <section class="section" aria-labelledby="h-range">
         <h3 id="h-range">Match your vocal range (optional)</h3>
-        <label class="check-row">
-          <input type="checkbox" id="chk-range-match"/>
-          Sort by how well songs fit my vocal range
-        </label>
-
-        <div class="expand-block" id="range-block">
+        <p class="caption">Enter the lowest and highest notes you can sing comfortably. Songs that fit come first, in the key that suits you best.</p>
+        <div>
           <div class="note-pair">
             <div class="input-group">
               <label for="input-low">Your lowest comfortable note</label>
@@ -274,7 +273,7 @@ td.num{color:var(--muted);}
               <div class="parse-hint" id="hint-high"></div>
             </div>
           </div>
-          <div class="parse-hint" id="hint-both">Enter both notes to score range matches.</div>
+          <div class="parse-hint" id="hint-both"></div>
         </div>
       </section>
 
@@ -343,6 +342,6 @@ td.num{color:var(--muted);}
   </div><!-- /app-shell -->
 </main>
 
-<script src="app.js?v=2026-10-11.4"></script>
+<script src="app.js?v=2026-10-11.5"></script>
 </body>
 </html>
