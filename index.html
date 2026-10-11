@@ -115,6 +115,7 @@ select{cursor:pointer;max-width:640px;}
 .parse-hint{font-size:14px;color:var(--muted);margin-top:4px;min-height:20px;}
 .parse-err{color:var(--error);}
 .parse-ok{color:var(--ok);}
+.note-callout{display:none;font-size:14px;background:#FFF8D6;border-left:4px solid var(--gold);padding:8px 12px;margin:8px 0 16px;border-radius:0 6px 6px 0;max-width:75ch;}
 
 .feat-grid{display:grid;grid-template-columns:repeat(2,minmax(0,260px));gap:0 24px;}
 @media(max-width:600px){.feat-grid{grid-template-columns:1fr;}}
@@ -219,6 +220,7 @@ td.num{color:var(--muted);}
         </label>
 
         <div class="expand-block" id="sim-block">
+          <div class="note-callout" id="prev-song-note"></div>
           <label class="field-label" for="sel-reference">Reference song</label>
           <select id="sel-reference"></select>
 
@@ -299,6 +301,7 @@ td.num{color:var(--muted);}
             <select id="sel-chosen-song"><option value="">— Use the filters above first —</option></select>
           </div>
           <div class="actions">
+            <button type="button" id="btn-cancel" class="btn btn-secondary">Cancel</button>
             <button type="button" id="btn-submit" class="btn btn-primary" disabled>Submit selection</button>
           </div>
         </div>
@@ -336,6 +339,6 @@ td.num{color:var(--muted);}
   </div><!-- /app-shell -->
 </main>
 
-<script src="app.js?v=2026-10-11.2"></script>
+<script src="app.js?v=2026-10-11.3"></script>
 </body>
 </html>

@@ -642,10 +642,55 @@ function wire(){
         alert('Please select a song from the dropdown first.');
         return;
       }
-      var params=new URLSearchParams(window.location.search||'');
-      var studentId=params.get('StudentID')||'';
-      window.location.href='https://aveschoir.org/Vocal-Solo-Event?StudentID='+encodeURIComponent(studentId)+'&song-code='+encodeURIComponent(songCode);
+      window.location.href=REGISTRATION_URL+'?StudentID='+encodeURIComponent(getParam('StudentID'))+'&song-code='+encodeURIComponent(songCode);
     });
+  }
+
+  var btnCancel=document.getElementById('btn-cancel');
+  if(btnCancel){
+    btnCancel.addEventListener('click',function(){
+      window.location.href=REGISTRATION_URL+'?StudentID='+encodeURIComponent(getParam('StudentID'));
+    });
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+// URL PARAMETERS (from the aveschoir.org registration form)
+// ════════════════════════════════════════════════════════════════
+var REGISTRATION_URL='https://aveschoir.org/Vocal-Solo-Event';
+
+function getParam(name){
+  var v=new URLSearchParams(window.location.search||'').get(name);
+  v=(v||'').trim();
+  return(!v||v.toUpperCase()==='NA')?'':v;
+}
+
+// PreviousVocalRange → default Vocal Range filter (students can change it).
+function applyPreviousVocalRange(){
+  var prev=getParam('PreviousVocalRange').toLowerCase();
+  if(!prev) return;
+  var chips=document.querySelectorAll('#chips-vr .chip');
+  var match=null;
+  chips.forEach(function(c){if(c.dataset.value.toLowerCase()===prev) match=c;});
+  if(!match) return;
+  chips.forEach(function(c){setChip(c,c===match);});
+}
+
+// PreviousSongCode → default reference song for similarity (optional).
+function applyPreviousSongCode(){
+  var code=getParam('PreviousSongCode');
+  if(!code) return;
+  var idx=allSongs.findIndex(function(s){return String(s.Song_Code||'').trim()===code;});
+  if(idx<0) return;
+  document.getElementById('sel-reference').value=String(idx);
+  var chk=document.getElementById('chk-similarity');
+  chk.checked=true;
+  document.getElementById('sim-block').classList.add('open');
+  var note=document.getElementById('prev-song-note');
+  if(note){
+    note.textContent='We started with the song you sang last time, '+allSongs[idx].Title+
+      '. Pick a different reference song, or turn this off to skip it.';
+    note.style.display='block';
   }
 }
 
@@ -682,6 +727,9 @@ function initializeSongSelector(){
         o.value=String(item.i);o.textContent=item.label;
         ref.appendChild(o);
       });
+
+      applyPreviousVocalRange();
+      applyPreviousSongCode();
 
       renderOverview(allSongs);
       runPipeline();
