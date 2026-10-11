@@ -3,335 +3,339 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-<title>VSAE Song Recommender</title>
+<title>VSAE Song Selector | Aves Choir</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700&family=Roboto:wght@400;500;700&display=swap" rel="stylesheet"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
+/* Colors, type and spacing follow the Aves Choir Website Style Guide (Oct 2026). */
 :root{
-  --bg:#020b1b;--surface:rgba(255,255,255,.04);--surface2:#1a2236;
-  --bg-input:#2b3242;--text:#eef3ff;--muted:#bac3d8;
-  --line:rgba(152,168,198,.28);--accent:#ff6a5f;--accent-soft:rgba(255,106,95,.22);
+  --green:#03553E;        /* primary green: header, active states */
+  --green-action:#198754; /* action green: buttons */
+  --gold:#FFD200;         /* small accents only */
+  --link:#006B9F;
+  --white:#FFFFFF;
+  --surface:#EEEFF0;      /* light gray section surface */
+  --ink:#111111;          /* headings */
+  --text:#333333;         /* body */
+  --muted:#666666;        /* captions */
+  --border:#CED4DA;       /* field border */
+  --line:#E3E5E8;
+  --error:#B42318;
+  --ok:#198754;
 }
 *{box-sizing:border-box;margin:0;padding:0;}
 body{
-  font-family:'Segoe UI',system-ui,sans-serif;font-size:14px;
-  background:
-    radial-gradient(1200px 500px at 12% -10%,#14304d 0%,transparent 48%),
-    radial-gradient(1200px 500px at 88% -12%,#2a1f37 0%,transparent 42%),
-    var(--bg);
-  color:var(--text);min-height:100vh;
+  font-family:Roboto,Arial,sans-serif;font-size:16px;line-height:1.6;
+  background:var(--white);color:var(--text);min-height:100vh;
+}
+a{color:var(--link);}
+:focus-visible{outline:3px solid var(--gold);outline-offset:2px;}
+
+/* ── header band (echoes the site's green nav with gold border) ── */
+.site-band{background:var(--green);border-bottom:4px solid var(--gold);color:var(--white);}
+.site-band .inner{max-width:1140px;margin:0 auto;padding:32px 24px;}
+.site-band h1{font-family:Poppins,Arial,sans-serif;font-size:48px;font-weight:700;line-height:1.15;color:var(--white);}
+.site-band p{margin-top:8px;max-width:70ch;color:rgba(255,255,255,.92);}
+@media(max-width:700px){
+  .site-band .inner{padding:24px 16px;}
+  .site-band h1{font-size:32px;line-height:1.2;}
 }
 
 /* ── shell ── */
-.app-wrap{max-width:1400px;margin:0 auto;padding:2rem 1.5rem 4rem;}
-#loading{padding:4rem;text-align:center;color:var(--muted);font-size:.9rem;}
-#error-msg{display:none;background:rgba(248,81,73,.1);border:1px solid #f85149;border-radius:8px;padding:14px 16px;margin-bottom:1.5rem;color:#f85149;font-family:monospace;font-size:.8rem;white-space:pre-wrap;}
+.app-wrap{max-width:1140px;margin:0 auto;padding:32px 24px 64px;}
+@media(max-width:700px){.app-wrap{padding:24px 16px 48px;}}
+#loading{padding:64px 0;text-align:center;color:var(--muted);}
+#error-msg{display:none;background:#FDECEA;border:1px solid var(--error);border-radius:6px;padding:16px;margin-bottom:24px;color:var(--error);white-space:pre-wrap;}
 #app-shell{display:none;}
 
-/* ── header ── */
-.app-title{display:flex;align-items:center;gap:.6rem;font-size:1.7rem;font-weight:700;letter-spacing:-.03em;margin-bottom:6px;}
-.app-sub{color:var(--muted);font-size:.85rem;line-height:1.6;margin-bottom:1.8rem;}
-
 /* ── tabs ── */
-.tab-list{display:flex;gap:.25rem;border-bottom:1px solid var(--line);margin-bottom:1.8rem;}
+.tab-list{display:flex;gap:8px;border-bottom:1px solid var(--line);margin-bottom:32px;}
 .tab-btn{
-  background:transparent;border:none;color:var(--text);font-weight:700;
-  font-size:.85rem;padding:.55rem .7rem;cursor:pointer;
-  border-bottom:2px solid transparent;margin-bottom:-1px;
-  transition:color .15s,border-color .15s;
+  background:transparent;border:none;color:var(--text);font:500 16px/1.4 Roboto,Arial,sans-serif;
+  padding:12px 16px;cursor:pointer;border-bottom:3px solid transparent;margin-bottom:-1px;
 }
-.tab-btn.active{color:var(--accent);border-bottom-color:var(--accent);}
+.tab-btn:hover{color:var(--green);}
+.tab-btn.active{color:var(--green);border-bottom-color:var(--gold);font-weight:700;}
 .tab-pane{display:none;}
 .tab-pane.active{display:block;}
 
-/* ── section titles ── */
-h2{font-size:1.15rem;font-weight:700;margin-bottom:6px;}
-h3{font-size:.95rem;font-weight:700;margin-bottom:6px;}
-h4{font-size:.82rem;font-weight:700;margin:.8rem 0 6px;}
-.caption{font-size:.78rem;color:var(--muted);line-height:1.6;margin-bottom:10px;}
-.divider{border:none;border-top:1px solid var(--line);margin:1.5rem 0;}
+/* ── headings & text ── */
+h2,h3,h4{font-family:Poppins,Arial,sans-serif;color:var(--ink);}
+h2{font-size:32px;font-weight:600;line-height:1.25;margin-bottom:8px;}
+h3{font-size:22px;font-weight:600;line-height:1.3;margin-bottom:8px;}
+h4{font-size:16px;font-weight:600;margin:16px 0 8px;}
+@media(max-width:700px){h2{font-size:26px;}h3{font-size:20px;}}
+.caption{font-size:14px;line-height:1.5;color:var(--muted);margin-bottom:16px;max-width:75ch;}
+.section{padding:32px 0;border-top:1px solid var(--line);}
+.section.tinted{background:var(--surface);border-top:none;border-radius:6px;padding:32px 24px;margin:16px 0;}
+@media(max-width:700px){.section.tinted{padding:24px 16px;}}
 
-/* ── 3-col filter grid ── */
-.filter-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:1.2rem;margin-bottom:.5rem;}
-@media(max-width:750px){.filter-grid{grid-template-columns:1fr;}}
-.filter-col > label{display:block;font-size:.8rem;color:var(--muted);margin-bottom:8px;font-weight:600;}
+/* ── filters ── */
+.filter-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;}
+@media(max-width:800px){.filter-grid{grid-template-columns:1fr;}}
+.field-label{display:block;font-weight:500;color:var(--ink);margin-bottom:8px;}
 
 /* ── toggle chips ── */
-.chips{display:flex;flex-wrap:wrap;gap:5px;}
+.chips{display:flex;flex-wrap:wrap;gap:8px;}
 .chip{
-  display:inline-block;padding:4px 11px;border-radius:20px;font-size:.75rem;
-  cursor:pointer;user-select:none;transition:all .12s;
-  background:var(--accent-soft);border:1px solid rgba(255,106,95,.7);color:#ffd8d3;
+  font:500 14px/1.2 Roboto,Arial,sans-serif;padding:8px 14px;min-height:36px;border-radius:999px;
+  cursor:pointer;user-select:none;
+  background:var(--green);border:1px solid var(--green);color:var(--white);
 }
-.chip.off{background:rgba(255,255,255,.06);border-color:rgba(152,168,198,.3);color:var(--muted);}
+.chip.off{background:var(--white);border-color:var(--border);color:var(--text);}
+.chip:hover{border-color:var(--green);}
 
 /* ── checkboxes ── */
-.check-row{display:flex;align-items:center;gap:8px;margin:6px 0;font-size:.84rem;cursor:pointer;}
-.check-row input[type="checkbox"]{accent-color:var(--accent);width:15px;height:15px;cursor:pointer;flex-shrink:0;}
-.check-section{margin-left:1px;}
+.check-row{display:flex;align-items:center;gap:10px;margin:8px 0;cursor:pointer;}
+.check-row input[type="checkbox"]{accent-color:var(--green);width:18px;height:18px;cursor:pointer;flex-shrink:0;}
 
 /* ── expandable block ── */
-.expand-block{display:none;margin-top:10px;}
+.expand-block{display:none;margin-top:16px;}
 .expand-block.open{display:block;}
 
 /* ── sliders ── */
-.slider-wrap{margin:6px 0;}
-.slider-wrap label{display:block;font-size:.8rem;color:var(--muted);margin-bottom:6px;}
-.slider-row{display:flex;align-items:center;gap:10px;}
-input[type="range"]{flex:1;accent-color:var(--accent);cursor:pointer;}
-.slider-val{font-family:monospace;font-size:.82rem;color:var(--accent);min-width:36px;text-align:right;}
+.slider-wrap{margin:16px 0;max-width:500px;}
+.slider-wrap label{display:block;font-weight:500;color:var(--ink);margin-bottom:8px;}
+.slider-row{display:flex;align-items:center;gap:12px;}
+input[type="range"]{flex:1;accent-color:var(--green);cursor:pointer;}
+.slider-val{font-weight:700;color:var(--green);min-width:40px;text-align:right;}
 
-/* ── text inputs ── */
-.note-pair{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin:8px 0;}
-.input-group label{display:block;font-size:.8rem;color:var(--muted);margin-bottom:5px;}
-input[type="text"]{
-  width:100%;background:var(--bg-input);border:1px solid rgba(255,106,95,.5);
-  border-radius:7px;color:var(--text);font-size:.85rem;padding:7px 10px;outline:none;
-  transition:border-color .15s;
+/* ── text inputs & selects ── */
+.note-pair{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin:8px 0;max-width:600px;}
+@media(max-width:600px){.note-pair{grid-template-columns:1fr;}}
+.input-group label{display:block;font-weight:500;color:var(--ink);margin-bottom:6px;}
+input[type="text"],select{
+  width:100%;min-height:44px;background:var(--white);border:1px solid var(--border);
+  border-radius:6px;color:var(--text);font:400 16px Roboto,Arial,sans-serif;padding:8px 12px;
 }
-input[type="text"]:focus{border-color:var(--accent);}
-.parse-hint{font-size:.73rem;color:var(--muted);margin-top:3px;min-height:14px;}
-.parse-err{color:#f85149;}
-.parse-ok{color:#3fb950;}
+input[type="text"]:focus,select:focus{border-color:var(--green);outline:2px solid rgba(3,85,62,.25);outline-offset:0;}
+select{cursor:pointer;max-width:640px;}
+.parse-hint{font-size:14px;color:var(--muted);margin-top:4px;min-height:20px;}
+.parse-err{color:var(--error);}
+.parse-ok{color:var(--ok);}
 
-/* ── reference select ── */
-select{
-  width:100%;background:var(--bg-input);border:1px solid rgba(255,255,255,.12);
-  border-radius:7px;color:var(--text);font-size:.82rem;padding:7px 10px;outline:none;
-  cursor:pointer;max-width:600px;
-}
-
-/* ── similarity feature checkboxes ── */
-.feat-grid{display:grid;grid-template-columns:1fr 1fr;gap:2px 1rem;margin:4px 0;}
+.feat-grid{display:grid;grid-template-columns:repeat(2,minmax(0,260px));gap:0 24px;}
+@media(max-width:600px){.feat-grid{grid-template-columns:1fr;}}
 
 /* ── tables ── */
-.table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:9px;margin:1rem 0;}
-table{width:100%;border-collapse:collapse;font-size:.78rem;}
+.table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:6px;margin:16px 0;background:var(--white);}
+table{width:100%;border-collapse:collapse;font-size:14px;}
 thead th{
-  background:rgba(0,0,0,.35);padding:9px 12px;text-align:left;
-  font-weight:600;color:var(--muted);border-bottom:1px solid var(--line);
-  white-space:nowrap;font-size:.68rem;text-transform:uppercase;letter-spacing:.05em;
-  position:sticky;top:0;
+  background:var(--green);color:var(--white);padding:10px 12px;text-align:left;
+  font-weight:500;white-space:nowrap;position:sticky;top:0;
 }
-tbody td{padding:8px 12px;border-bottom:1px solid rgba(152,168,198,.08);white-space:nowrap;}
-tbody tr:hover td{background:rgba(255,106,95,.06);}
-tbody tr:nth-child(even) td{background:rgba(255,255,255,.025);}
-.empty-row{padding:2.5rem;text-align:center;color:var(--muted);font-size:.85rem;}
+tbody td{padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap;}
+tbody tr:nth-child(even) td{background:#F7F8F8;}
+tbody tr:hover td{background:#E9F3EE;}
+td.num{color:var(--muted);}
+.empty-row{padding:40px;text-align:center;color:var(--muted);}
 
 /* ── metric cards ── */
-.metric-row{display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;margin-bottom:1.5rem;}
-@media(max-width:600px){.metric-row{grid-template-columns:repeat(2,1fr);}}
-.metric{background:var(--surface2);border:1px solid var(--line);border-radius:9px;padding:14px 16px;}
-.metric-label{font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;}
-.metric-value{font-size:1.6rem;font-weight:700;}
+.metric-row{display:grid;grid-template-columns:repeat(4,1fr);gap:24px;margin-bottom:32px;}
+@media(max-width:700px){.metric-row{grid-template-columns:repeat(2,1fr);gap:16px;}}
+.metric{background:var(--surface);border-top:4px solid var(--green);border-radius:6px;padding:16px;}
+.metric-label{font-size:14px;color:var(--muted);margin-bottom:4px;}
+.metric-value{font-family:Poppins,Arial,sans-serif;font-size:32px;font-weight:600;color:var(--ink);}
 
 /* ── charts ── */
-.chart-pair{display:grid;grid-template-columns:1fr 1fr;gap:1.2rem;margin-bottom:1.2rem;}
-@media(max-width:650px){.chart-pair{grid-template-columns:1fr;}}
-.chart-box{background:var(--surface2);border:1px solid var(--line);border-radius:9px;padding:16px;}
-.chart-title{font-size:.78rem;font-weight:700;margin-bottom:12px;}
-.chart-box canvas{max-height:220px;}
+.chart-pair{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:24px;}
+@media(max-width:700px){.chart-pair{grid-template-columns:1fr;}}
+.chart-box{background:var(--white);border:1px solid var(--line);border-radius:6px;padding:16px;}
+.chart-title{font-family:Poppins,Arial,sans-serif;font-weight:600;color:var(--ink);margin-bottom:12px;}
+.chart-box canvas{max-height:240px;}
 
-/* ── similarity section label ── */
-.sim-group-label{font-size:.8rem;color:var(--muted);margin-bottom:4px;font-weight:600;}
-
-/* ── credits footer ── */
-.credits{
-  margin-top:2rem;padding:14px 0 4px;
-  border-top:1px solid rgba(152,168,198,.12);
-  text-align:center;font-size:.75rem;
-  color:rgba(186,195,216,.4);letter-spacing:.02em;
+/* ── buttons (one primary + one secondary treatment) ── */
+.btn{
+  min-height:44px;padding:12px 20px;border-radius:6px;cursor:pointer;
+  font:500 16px/1.2 Roboto,Arial,sans-serif;
 }
+.btn-primary{background:var(--green-action);border:1px solid var(--green-action);color:var(--white);}
+.btn-primary:hover:not(:disabled){background:#146C43;border-color:#146C43;}
+.btn-primary:disabled{background:#D5D8DB;border-color:#D5D8DB;color:#6B7075;cursor:not-allowed;}
+.btn-secondary{background:var(--white);border:1px solid var(--green);color:var(--green);}
+.btn-secondary:hover{background:#E9F3EE;}
 
-/* ── song selection bar ── */
-.select-song-bar{
-  margin-top:1.8rem;padding:18px 20px;
-  background:var(--surface2);border:1px solid var(--accent);
-  border-radius:10px;display:flex;flex-wrap:wrap;align-items:end;gap:1rem;
-}
+/* ── song selection ── */
+.select-song-bar{display:flex;flex-wrap:wrap;align-items:end;gap:16px;}
 .select-song-bar .field{flex:1;min-width:240px;}
-.select-song-bar .field label{display:block;font-size:.8rem;color:var(--muted);margin-bottom:6px;font-weight:600;}
-.select-song-bar select{max-width:100%;}
-#btn-submit{
-  padding:10px 28px;border:none;border-radius:8px;font-size:.88rem;font-weight:700;
-  cursor:pointer;transition:all .15s;letter-spacing:.01em;
-}
-#btn-submit:disabled{background:rgba(255,255,255,.08);color:var(--muted);cursor:not-allowed;}
-#btn-submit:not(:disabled){background:var(--accent);color:#fff;}
-#btn-submit:not(:disabled):hover{filter:brightness(1.15);}
+.select-song-bar .actions{display:flex;gap:12px;flex-wrap:wrap;}
+
+/* ── credits ── */
+.credits{margin-top:48px;padding-top:16px;border-top:1px solid var(--line);text-align:center;font-size:14px;color:var(--muted);}
 </style>
 </head>
 <body>
-<div class="app-wrap">
-  <div id="error-msg"></div>
+<header class="site-band">
+  <div class="inner">
+    <h1>Find your VSAE song</h1>
+    <p>Filter by voice type, difficulty and language. You can also find songs like one you already know, or match songs to your vocal range.</p>
+  </div>
+</header>
+
+<main class="app-wrap">
+  <div id="error-msg" role="alert"></div>
   <div id="loading">Loading song data…</div>
 
   <div id="app-shell">
-    <div class="app-title">🎼 VSAE Song Recommender</div>
-    <p class="app-sub">
-      Filter by difficulty, language, and voice type. Optionally find songs similar to a reference song, or match your vocal range.
-    </p>
-
     <!-- Tabs -->
-    <div class="tab-list">
-      <button class="tab-btn active" data-tab="pane-browse">Browse by Difficulty</button>
-      <button class="tab-btn" data-tab="pane-overview">Dataset Overview</button>
+    <div class="tab-list" role="tablist">
+      <button class="tab-btn active" data-tab="pane-browse" role="tab">Find a song</button>
+      <button class="tab-btn" data-tab="pane-overview" role="tab">About the song list</button>
     </div>
 
     <!-- ═══ TAB 1 ═══ -->
     <div id="pane-browse" class="tab-pane active">
 
-      <h2>Browse Songs by Vocal Range &amp; Difficulty</h2>
-      <p class="caption">Filter by difficulty, language, and voice type. Optionally find songs similar to a reference song, or match your vocal range.</p>
-
-      <!-- 3-column filters -->
-      <div class="filter-grid">
-        <div class="filter-col">
-          <label>Vocal Range</label>
-          <div class="chips" id="chips-vr"></div>
+      <section class="section tinted" aria-labelledby="h-filters">
+        <h2 id="h-filters">Browse songs</h2>
+        <p class="caption">All options start on. Tap an option to turn it off.</p>
+        <div class="filter-grid">
+          <div>
+            <span class="field-label">Vocal range</span>
+            <div class="chips" id="chips-vr"></div>
+          </div>
+          <div>
+            <span class="field-label">Difficulty class</span>
+            <div class="chips" id="chips-class"></div>
+          </div>
+          <div>
+            <span class="field-label">Language</span>
+            <div class="chips" id="chips-lang"></div>
+          </div>
         </div>
-        <div class="filter-col">
-          <label>Difficulty Class (Required)</label>
-          <div class="chips" id="chips-class"></div>
-        </div>
-        <div class="filter-col">
-          <label>Language</label>
-          <div class="chips" id="chips-lang"></div>
-        </div>
-      </div>
-
-      <hr class="divider"/>
+      </section>
 
       <!-- Similarity section -->
-      <h3>Recommend Songs based on Reference Song (Optional)</h3>
-      <p class="caption">
-        This will recommend songs based on relative similarity to a reference song of your choice, based on selected features.
-      </p>
-      <label class="check-row">
-        <input type="checkbox" id="chk-similarity"/>
-        Recommend songs based on relative similarity to a reference song
-      </label>
-
-      <div class="expand-block" id="sim-block">
-        <div style="margin:10px 0;">
-          <div class="sim-group-label">Reference song</div>
-          <select id="sel-reference"></select>
-        </div>
-
-        <div class="slider-wrap" style="max-width:500px;">
-          <label>Minimum similarity score &nbsp;<span id="sim-min-label" style="color:var(--accent);font-family:monospace;">0.00</span></label>
-          <div class="slider-row">
-            <input type="range" id="slider-sim-min" min="0" max="1" step="0.01" value="0"/>
-          </div>
-        </div>
-
-        <h4>Similarity Features</h4>
-        <div class="feat-grid">
-          <label class="check-row"><input type="checkbox" id="feat-vocalrange" checked/> Vocal Range</label>
-          <label class="check-row"><input type="checkbox" id="feat-class" checked/> Difficulty (Class)</label>
-          <label class="check-row"><input type="checkbox" id="feat-language" checked/> Language</label>
-          <label class="check-row"><input type="checkbox" id="feat-genre" checked/> Genre</label>
-          <label class="check-row"><input type="checkbox" id="feat-era"/> Era / Time Period</label>
-          <label class="check-row"><input type="checkbox" id="feat-rangespan"/> Note Range Span</label>
-          <label class="check-row"><input type="checkbox" id="feat-runtime"/> Runtime</label>
-        </div>
-        <label class="check-row" style="margin-top:6px;">
-          <input type="checkbox" id="chk-exclude-transpositions" checked/>
-          Exclude other keys of the same piece
+      <section class="section" aria-labelledby="h-similar">
+        <h3 id="h-similar">Find songs like one you know (optional)</h3>
+        <p class="caption">
+          Pick a reference song and we'll rank the other songs by how similar they are, using the features you choose below.
+        </p>
+        <label class="check-row">
+          <input type="checkbox" id="chk-similarity"/>
+          Rank songs by similarity to a reference song
         </label>
-      </div>
 
-      <hr class="divider"/>
+        <div class="expand-block" id="sim-block">
+          <label class="field-label" for="sel-reference">Reference song</label>
+          <select id="sel-reference"></select>
+
+          <div class="slider-wrap">
+            <label for="slider-sim-min">Minimum similarity <span id="sim-min-label" class="slider-val">0.00</span></label>
+            <div class="slider-row">
+              <input type="range" id="slider-sim-min" min="0" max="1" step="0.01" value="0"/>
+            </div>
+            <div class="caption" id="sim-score-hint"></div>
+          </div>
+
+          <h4>Compare songs by</h4>
+          <div class="feat-grid">
+            <label class="check-row"><input type="checkbox" id="feat-vocalrange" checked/> Vocal range</label>
+            <label class="check-row"><input type="checkbox" id="feat-class" checked/> Difficulty class</label>
+            <label class="check-row"><input type="checkbox" id="feat-language" checked/> Language</label>
+            <label class="check-row"><input type="checkbox" id="feat-genre" checked/> Genre</label>
+            <label class="check-row"><input type="checkbox" id="feat-era"/> Era / time period</label>
+            <label class="check-row"><input type="checkbox" id="feat-rangespan"/> Note range span</label>
+            <label class="check-row"><input type="checkbox" id="feat-runtime"/> Runtime</label>
+          </div>
+          <label class="check-row">
+            <input type="checkbox" id="chk-exclude-transpositions" checked/>
+            Leave out other keys of the reference song
+          </label>
+        </div>
+      </section>
 
       <!-- Range match section -->
-      <h3>🎤 Match Your Vocal Range (Optional)</h3>
-      <label class="check-row">
-        <input type="checkbox" id="chk-range-match"/>
-        Sort by how well songs match my vocal range
-      </label>
+      <section class="section" aria-labelledby="h-range">
+        <h3 id="h-range">Match your vocal range (optional)</h3>
+        <label class="check-row">
+          <input type="checkbox" id="chk-range-match"/>
+          Sort by how well songs fit my vocal range
+        </label>
 
-      <div class="expand-block" id="range-block">
-        <div class="note-pair">
-          <div class="input-group">
-            <label>Your lowest comfortable note</label>
-            <input type="text" id="input-low" placeholder="e.g. B3"/>
-            <div class="parse-hint" id="hint-low"></div>
+        <div class="expand-block" id="range-block">
+          <div class="note-pair">
+            <div class="input-group">
+              <label for="input-low">Your lowest comfortable note</label>
+              <input type="text" id="input-low" placeholder="e.g. B3"/>
+              <div class="parse-hint" id="hint-low"></div>
+            </div>
+            <div class="input-group">
+              <label for="input-high">Your highest comfortable note</label>
+              <input type="text" id="input-high" placeholder="e.g. F5"/>
+              <div class="parse-hint" id="hint-high"></div>
+            </div>
           </div>
-          <div class="input-group">
-            <label>Your highest comfortable note</label>
-            <input type="text" id="input-high" placeholder="Press Enter to apply"/>
-            <div class="parse-hint" id="hint-high"></div>
+          <div class="parse-hint" id="hint-both">Enter both notes to score range matches.</div>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="h-results">
+        <h2 id="h-results">Recommended songs</h2>
+        <div class="slider-wrap">
+          <label for="slider-topk">Number of songs to show</label>
+          <div class="slider-row">
+            <input type="range" id="slider-topk" min="5" max="50" value="10"/>
+            <span class="slider-val" id="topk-label">10</span>
           </div>
         </div>
-        <div class="parse-hint" id="hint-both">Enter both notes to score range matches.</div>
-      </div>
 
-      <hr class="divider"/>
+        <div class="table-wrap"><div id="tbl-main"><div class="empty-row">Load data to see songs.</div></div></div>
 
-      <div class="slider-wrap" style="max-width:500px;">
-        <label>Number of songs to show</label>
-        <div class="slider-row">
-          <input type="range" id="slider-topk" min="5" max="50" value="10"/>
-          <span class="slider-val" id="topk-label">10</span>
-        </div>
-      </div>
-
-      <!-- Main table -->
-      <div class="table-wrap"><div id="tbl-main"><div class="empty-row">Load data to see songs.</div></div></div>
-
-      <hr class="divider"/>
-
-      <h3>Worth looking into but no music and/or tracks</h3>
-      <p class="caption">These are songs we think you may like based on your filters, but they are missing note and/or runtime data.</p>
-      <div class="table-wrap"><div id="tbl-missing"><div class="empty-row">None.</div></div></div>
+        <h3 style="margin-top:32px;">Also worth a look</h3>
+        <p class="caption">These songs match your filters, but we don't have their note range and/or runtime yet.</p>
+        <div class="table-wrap"><div id="tbl-missing"><div class="empty-row">None.</div></div></div>
+      </section>
 
       <!-- Song selection -->
-      <hr class="divider"/>
-      <h3>📋 Select Your Song</h3>
-      <p class="caption">Choose a song from the recommendations above, then submit your selection.</p>
-      <div class="select-song-bar">
-        <div class="field">
-          <label>Your chosen song</label>
-          <select id="sel-chosen-song"><option value="">— Use the filters above first —</option></select>
+      <section class="section tinted" aria-labelledby="h-select">
+        <h2 id="h-select">Choose your song</h2>
+        <p class="caption">Pick a song from the recommendations above. Submitting takes you back to the registration form with your song filled in.</p>
+        <div class="select-song-bar">
+          <div class="field">
+            <label class="field-label" for="sel-chosen-song">Your song</label>
+            <select id="sel-chosen-song"><option value="">— Use the filters above first —</option></select>
+          </div>
+          <div class="actions">
+            <button type="button" id="btn-submit" class="btn btn-primary" disabled>Submit selection</button>
+          </div>
         </div>
-        <button id="btn-submit" disabled>Submit Selection</button>
-      </div>
+      </section>
 
       <div class="credits">Data collected by Aves Choir members &amp; volunteers &middot; App developed by Shanaya Pal</div>
     </div><!-- /pane-browse -->
 
     <!-- ═══ TAB 2 ═══ -->
     <div id="pane-overview" class="tab-pane">
-      <h2>Dataset Overview</h2>
-      <hr class="divider" style="margin-top:.5rem;"/>
+      <h2>About the song list</h2>
 
-      <div class="metric-row">
-        <div class="metric"><div class="metric-label">Total Songs</div><div class="metric-value" id="m-total">—</div></div>
-        <div class="metric"><div class="metric-label">Vocal Ranges</div><div class="metric-value" id="m-ranges">—</div></div>
+      <div class="metric-row" style="margin-top:24px;">
+        <div class="metric"><div class="metric-label">Total songs</div><div class="metric-value" id="m-total">—</div></div>
+        <div class="metric"><div class="metric-label">Vocal ranges</div><div class="metric-value" id="m-ranges">—</div></div>
         <div class="metric"><div class="metric-label">Languages</div><div class="metric-value" id="m-langs">—</div></div>
         <div class="metric"><div class="metric-label">Composers</div><div class="metric-value" id="m-composers">—</div></div>
       </div>
 
-      <hr class="divider"/>
-
       <div class="chart-pair">
-        <div class="chart-box"><div class="chart-title">Songs by Vocal Range</div><canvas id="chart-vr"></canvas></div>
-        <div class="chart-box"><div class="chart-title">Songs by Difficulty Class</div><canvas id="chart-class"></canvas></div>
+        <div class="chart-box"><div class="chart-title">Songs by vocal range</div><canvas id="chart-vr"></canvas></div>
+        <div class="chart-box"><div class="chart-title">Songs by difficulty class</div><canvas id="chart-class"></canvas></div>
       </div>
       <div class="chart-pair">
-        <div class="chart-box"><div class="chart-title">Songs by Language</div><canvas id="chart-lang"></canvas></div>
-        <div class="chart-box"><div class="chart-title">Songs by Era</div><canvas id="chart-era"></canvas></div>
+        <div class="chart-box"><div class="chart-title">Songs by language</div><canvas id="chart-lang"></canvas></div>
+        <div class="chart-box"><div class="chart-title">Songs by era</div><canvas id="chart-era"></canvas></div>
       </div>
 
-      <hr class="divider"/>
-      <h3 style="margin-bottom:.8rem;">Full Dataset</h3>
+      <h3 style="margin:32px 0 8px;">Full song list</h3>
       <div class="table-wrap"><div id="tbl-full"></div></div>
 
       <div class="credits">Data collected by Aves Choir members &amp; volunteers &middot; App developed by Shanaya Pal</div>
     </div><!-- /pane-overview -->
 
   </div><!-- /app-shell -->
-</div><!-- /app-wrap -->
+</main>
 
-<script src="app.js?v=2026-10-11.1"></script>
+<script src="app.js?v=2026-10-11.2"></script>
 </body>
 </html>

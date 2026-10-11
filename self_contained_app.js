@@ -305,6 +305,8 @@ function noteRangeLabel(song,transposeVocalAll){
 // TABLE RENDERING
 // ════════════════════════════════════════════════════════════════
 var DISPLAY_COLS=['Title','Composer','VocalRange','Class','Language','Genre','Era','Note Range','Runtime'];
+var COL_LABELS={VocalRange:'Vocal range','Note Range':'Note range',RangeSpan:'Range span',RuntimeSeconds:'Runtime (s)'};
+function colLabel(c){return COL_LABELS[c]||c;}
 
 function renderTable(songs,containerId,transposeForMen,topK){
   var el=document.getElementById(containerId);
@@ -312,13 +314,13 @@ function renderTable(songs,containerId,transposeForMen,topK){
   if(!songs||!songs.length){el.innerHTML='<div class="empty-row">No songs match the current filters.</div>';return;}
   var rows=songs.slice(0,topK||songs.length);
   var html='<table><thead><tr><th>#</th>';
-  DISPLAY_COLS.forEach(function(c){html+='<th>'+esc(c)+'</th>';});
+  DISPLAY_COLS.forEach(function(c){html+='<th>'+esc(colLabel(c))+'</th>';});
   html+='</tr></thead><tbody>';
   rows.forEach(function(s,i){
     var rt=String(s['Runtime of Song']||'').trim();
     if(!rt||rt.toUpperCase()==='N/A'||rt.toUpperCase()==='NAN') rt='Missing';
     var noteRange=noteRangeLabel(s,transposeForMen);
-    html+='<tr><td style="color:var(--muted);">'+(i+1)+'</td>';
+    html+='<tr><td class="num">'+(i+1)+'</td>';
     ['Title','Composer','VocalRange','Class','Language','Genre','Era'].forEach(function(c){
       html+='<td>'+esc(s[c]||'')+'</td>';
     });
@@ -335,14 +337,20 @@ function buildChips(containerId,values){
   var el=document.getElementById(containerId); if(!el) return;
   el.innerHTML='';
   values.forEach(function(v){
-    var chip=document.createElement('span');
-    chip.className='chip';chip.textContent=v;chip.dataset.value=v;
+    var chip=document.createElement('button');
+    chip.type='button';chip.className='chip';chip.textContent=v;chip.dataset.value=v;
+    chip.setAttribute('aria-pressed','true');
     chip.addEventListener('click',function(){
-      chip.classList.toggle('off');
+      setChip(chip,chip.classList.contains('off'));
       runPipeline();
     });
     el.appendChild(chip);
   });
+}
+
+function setChip(chip,on){
+  chip.classList.toggle('off',!on);
+  chip.setAttribute('aria-pressed',on?'true':'false');
 }
 
 function getActiveChips(containerId){
@@ -375,14 +383,14 @@ function makeChart(canvasId,counts,color){
     type:'bar',
     data:{
       labels:labels,
-      datasets:[{data:data,backgroundColor:color||'rgba(255,106,95,.7)',borderColor:'rgba(255,106,95,1)',borderWidth:1,borderRadius:4}]
+      datasets:[{data:data,backgroundColor:color||'#03553E',borderRadius:4}]
     },
     options:{
       responsive:true,maintainAspectRatio:true,
       plugins:{legend:{display:false}},
       scales:{
-        x:{ticks:{color:'#bac3d8',font:{size:11}},grid:{color:'rgba(152,168,198,.1)'}},
-        y:{ticks:{color:'#bac3d8',font:{size:11},stepSize:1},grid:{color:'rgba(152,168,198,.1)'}}
+        x:{ticks:{color:'#444',font:{family:'Roboto',size:12}},grid:{display:false}},
+        y:{ticks:{color:'#444',font:{family:'Roboto',size:12},precision:0},grid:{color:'#E3E5E8'}}
       }
     }
   });
@@ -395,14 +403,14 @@ function renderOverview(songs){
   document.getElementById('m-composers').textContent=uniq(songs.map(function(s){return s.Composer;})).length;
 
   makeChart('chart-vr',countBy(songs,'VocalRange'));
-  makeChart('chart-class',countBy(songs,'Class'),'rgba(100,180,255,.7)');
-  makeChart('chart-lang',countBy(songs,'Language'),'rgba(100,220,150,.7)');
-  makeChart('chart-era',countBy(songs,'Era'),'rgba(220,160,255,.7)');
+  makeChart('chart-class',countBy(songs,'Class'));
+  makeChart('chart-lang',countBy(songs,'Language'));
+  makeChart('chart-era',countBy(songs,'Era'));
 
   var cols=['Title','Composer','VocalRange','Class','Language','Genre','Era','RangeSpan','RuntimeSeconds'];
-  var html='<table><thead><tr><th>#</th>'+cols.map(function(c){return'<th>'+esc(c)+'</th>';}).join('')+'</tr></thead><tbody>';
+  var html='<table><thead><tr><th>#</th>'+cols.map(function(c){return'<th>'+esc(colLabel(c))+'</th>';}).join('')+'</tr></thead><tbody>';
   songs.forEach(function(s,i){
-    html+='<tr><td style="color:var(--muted);">'+(i+1)+'</td>'+
+    html+='<tr><td class="num">'+(i+1)+'</td>'+
       cols.map(function(c){return'<td>'+esc(s[c]!=null?s[c]:'')+'</td>';}).join('')+'</tr>';
   });
   document.getElementById('tbl-full').innerHTML=html+'</tbody></table>';
