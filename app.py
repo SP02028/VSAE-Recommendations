@@ -166,7 +166,9 @@ MALE_RANGES = {"tenor", "baritone", "bass"}
 
 
 def should_transpose_for_men(selected_ranges: list[str]) -> bool:
-    return len(selected_ranges) == 1 and selected_ranges[0].casefold() in MALE_RANGES
+    """Vocal All songs drop an octave only when every selected voice is male;
+    any female voice (e.g. Alto + Tenor for a contralto) keeps written pitch."""
+    return bool(selected_ranges) and all(r.casefold() in MALE_RANGES for r in selected_ranges)
 
 
 def transpose_note_label(note_str: str, octave_shift: int) -> str:
@@ -234,7 +236,9 @@ with tab1:
 
     col1, col2, col3 = st.columns(3)
     with col1:
-        range_options = sorted(df['VocalRange'].dropna().unique().tolist())
+        # Vocal All isn't a voice: those songs are included whenever voices are narrowed
+        range_options = [v for v in ['Soprano', 'Mezzo Soprano', 'Alto', 'Tenor', 'Baritone', 'Bass']
+                         if v in set(df['VocalRange'].dropna())]
         selected_ranges = st.multiselect("Vocal Range", range_options, default=range_options)
 
     with col2:
@@ -252,14 +256,13 @@ with tab1:
     # Base filter set
     filtered = df.copy()
     transpose_for_men = should_transpose_for_men(selected_ranges)
-    if selected_ranges:
-        filtered = filtered[filtered['VocalRange'].isin(selected_ranges)]
-
-    if len(selected_ranges) == 1:
-        selected_range = selected_ranges[0]
-        bounds = vocal_range_bounds(selected_range)
-        if bounds:
-            low_bound, high_bound = bounds
+    narrowed = bool(selected_ranges) and len(selected_ranges) < len(range_options)
+    if narrowed:
+        filtered = filtered[filtered['VocalRange'].isin(selected_ranges + ['Vocal All'])]
+        all_bounds = [b for b in (vocal_range_bounds(r) for r in selected_ranges) if b]
+        if all_bounds:
+            low_bound = min(b[0] for b in all_bounds)
+            high_bound = max(b[1] for b in all_bounds)
             note_mask = valid_note_rows(filtered)
             filtered = filtered[note_mask]
             low_midi = filtered['LowestNote_MIDI']
@@ -269,8 +272,6 @@ with tab1:
                 low_midi = low_midi.where(~vocal_all_mask, low_midi - 12)
                 high_midi = high_midi.where(~vocal_all_mask, high_midi - 12)
             filtered = filtered[(low_midi <= high_bound) & (high_midi >= low_bound)]
-        else:
-            st.warning("That vocal range is not mapped in the dataset yet.")
 
     if selected_class:
         filtered = filtered[filtered['Class'].isin(selected_class)]

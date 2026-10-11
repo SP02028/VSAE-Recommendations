@@ -418,27 +418,34 @@ var RANGE_BOUNDS={
 };
 var MALE_VR=['tenor','baritone','bass'];
 
+// Vocal All songs are written at treble pitch. Men sing them an octave
+// lower, so transpose only when every selected voice is male. Any female
+// voice in the selection (e.g. Alto + Tenor for a contralto) keeps the
+// written pitch.
 function shouldTransposeForMen(selectedRanges){
-  return selectedRanges.length===1&&MALE_VR.indexOf(selectedRanges[0].toLowerCase())>=0;
+  return selectedRanges.length>0&&selectedRanges.every(function(v){return MALE_VR.indexOf(v.toLowerCase())>=0;});
 }
 
+// Vocal All isn't a voice chip: those songs are included whenever the
+// student narrows the voices, and kept if they overlap the combined range
+// of the selected voices (an octave lower for men).
 function applyVocalRangeFilter(songs,selectedRanges){
-  if(!selectedRanges.length) return songs;
-  var set={};selectedRanges.forEach(function(v){set[v]=1;});
-  var filtered=songs.filter(function(s){return set[s.VocalRange];});
-  if(selectedRanges.length===1){
-    var bounds=RANGE_BOUNDS[selectedRanges[0]];
-    if(bounds){
-      var isMale=shouldTransposeForMen(selectedRanges);
-      filtered=filtered.filter(function(s){
-        var hi=s.HighestNote_MIDI,lo=s.LowestNote_MIDI;
-        if(hi==null||lo==null) return false;
-        if(isMale&&s.VocalRange==='Vocal All'){lo-=12;hi-=12;}
-        return lo<=bounds.high&&hi>=bounds.low;
-      });
-    }
-  }
-  return filtered;
+  if(!selectedRanges.length||selectedRanges.length>=VOICE_LADDER.length) return songs;
+  var set={'Vocal All':1},lo=Infinity,hi=-Infinity;
+  selectedRanges.forEach(function(v){
+    set[v]=1;
+    var b=RANGE_BOUNDS[v];
+    if(b){lo=Math.min(lo,b.low);hi=Math.max(hi,b.high);}
+  });
+  var isMale=shouldTransposeForMen(selectedRanges);
+  return songs.filter(function(s){
+    if(!set[s.VocalRange]) return false;
+    if(!isFinite(lo)) return true;
+    var sHi=s.HighestNote_MIDI,sLo=s.LowestNote_MIDI;
+    if(sHi==null||sLo==null) return false;
+    if(isMale&&s.VocalRange==='Vocal All'){sLo-=12;sHi-=12;}
+    return sLo<=hi&&sHi>=lo;
+  });
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -520,7 +527,9 @@ function renderTable(songs,containerId,transposeForMen,topK){
     var others=(s._otherKeys||[]).map(versionLabel);
     html+='<td>'+esc(s.Title||'')+(others.length?'<div class="also-in">Also in keys: '+esc(others.join(' \u00b7 '))+'</div>':'')+'</td>';
     ['Composer','VocalRange','Class','Language','Genre','Era'].forEach(function(c){
-      html+='<td>'+esc(s[c]||'')+'</td>';
+      var v=s[c]||'';
+      if(c==='VocalRange'&&transposeForMen&&v==='Vocal All') v='Vocal All (octave lower)';
+      html+='<td>'+esc(v)+'</td>';
     });
     html+='<td>'+esc(noteRange)+'</td><td>'+esc(rt)+'</td>';
     if(showFit){
@@ -955,7 +964,7 @@ function initializeSongSelector(){
       document.getElementById('loading').style.display='none';
       document.getElementById('app-shell').style.display='block';
 
-      buildChips('chips-vr',uniq(allSongs.map(function(s){return s.VocalRange;})));
+      buildChips('chips-vr',VOICE_LADDER.filter(function(v){return allSongs.some(function(s){return s.VocalRange===v;});}));
       buildChips('chips-class',uniq(allSongs.map(function(s){return s.Class;})));
       buildChips('chips-lang',['English','French','German','Spanish','Latin','Italian']);
 
