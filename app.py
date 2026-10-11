@@ -219,10 +219,50 @@ def parse_note_input(note_str: str) -> int | None:
     from vsae_data import note_to_midi
     if not note_str or not isinstance(note_str, str):
         return None
-    try:
-        return note_to_midi(note_str.strip())
-    except:
+    # Strict: a note name and one octave digit (note_to_midi alone read "C10" as C1)
+    cleaned = re.sub(r'\s+', '', note_str).replace('♯', '#').replace('♭', 'b')
+    if not re.fullmatch(r'[A-Ga-g][#b]?\d', cleaned):
         return None
+    return note_to_midi(cleaned)
+
+
+NOTE_NAMES = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B']
+VOICE_MIN, VOICE_MAX = 33, 96   # A1–C7
+NARROW_SPAN, WIDE_SPAN = 12, 36
+
+
+def midi_to_note(m: int) -> str:
+    return f"{NOTE_NAMES[m % 12]}{m // 12 - 1}"
+
+
+def validate_vocal_range(low_str: str, high_str: str):
+    """Return (low, high, errors, warning). low/high are None unless usable.
+    Mirrors validateVocalRange in self_contained_app.js."""
+    errors = []
+    low, high = parse_note_input(low_str), parse_note_input(high_str)
+    for label, text, midi in (("lowest", low_str, low), ("highest", high_str, high)):
+        if not text:
+            continue
+        if midi is None:
+            errors.append(f"Your {label} note: use a note name and octave, like B3 or F#5.")
+        elif not VOICE_MIN <= midi <= VOICE_MAX:
+            errors.append(f"{midi_to_note(midi)} is outside the range of the human voice (A1–C7). "
+                          "Check the octave number: middle C is C4.")
+    if errors or low is None or high is None:
+        return None, None, errors, None
+    if low > high:
+        return None, None, [f"Your lowest note ({midi_to_note(low)}) is above your highest note "
+                            f"({midi_to_note(high)}). Swap them?"], None
+    if low == high:
+        return None, None, ["Your lowest and highest notes are the same. Enter the full range you can sing."], None
+    span = high - low
+    warning = None
+    if span < NARROW_SPAN:
+        warning = (f"That range is under an octave ({span} semitones). "
+                   "Most songs need at least an octave, so few will fit.")
+    elif span > WIDE_SPAN:
+        warning = "That range is over three octaves. Double-check the octave numbers (middle C is C4)."
+    return low, high, [], warning
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 1 — Home
@@ -387,13 +427,11 @@ with tab1:
                 "Your highest comfortable note",
                 placeholder="Press Enter to apply",
             )
-        note_low = parse_note_input(note_low_input)
-        note_high = parse_note_input(note_high_input)
-
-        if note_low_input and note_low is None:
-            st.caption(f"Could not parse '{note_low_input}'.")
-        if note_high_input and note_high is None:
-            st.caption(f"Could not parse '{note_high_input}'.")
+        note_low, note_high, range_errors, range_warning = validate_vocal_range(note_low_input, note_high_input)
+        for err in range_errors:
+            st.error(err)
+        if range_warning:
+            st.warning(range_warning)
 
     display = filtered.copy()
     display = display[~missing_note_or_runtime(display)].copy()
@@ -418,8 +456,8 @@ with tab1:
             fully_contained = (song_low >= low_bound) & (song_high <= high_bound)
             score = np.where(fully_contained, 100.0, score)
             display['RangeMatchScore'] = np.round(score).astype(int)
-        else:
-            st.caption("Enter both notes to score range matches.")
+        elif not range_errors and (note_low_input or note_high_input):
+            st.caption("Enter both notes to sort by range fit.")
 
         sort_cols = ["RangeMatchScore"]
         if similarity_enabled and 'SimilarityScore' in display.columns:

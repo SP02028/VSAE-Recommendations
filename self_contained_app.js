@@ -14,9 +14,46 @@ function noteToMidi(s){
   return(parseInt(m[2],10)+1)*12+PITCH_CLASS[p];
 }
 
+// Student input must be exactly a note name and one octave digit
+// ("B3", "f#5", "Bb 2"). noteToMidi alone is lenient: it read "C10" as C1.
 function parseNoteInput(s){
-  if(!s||typeof s!=='string'||!s.trim()) return null;
-  return noteToMidi(s.trim());
+  if(!s||typeof s!=='string') return null;
+  var t=s.replace(/\s+/g,'').replace('♯','#').replace('♭','b');
+  if(!/^[A-Ga-g][#b]?\d$/.test(t)) return null;
+  return noteToMidi(t);
+}
+
+var NOTE_NAMES=['C','C#','D','Eb','E','F','F#','G','Ab','A','Bb','B'];
+function midiToNote(m){return NOTE_NAMES[m%12]+(Math.floor(m/12)-1);}
+
+// Limits for the singer's range. Songs in the list span D#2–A5 and a
+// median of 15 semitones (90% need at least an octave).
+var VOICE_MIN=33;   // A1
+var VOICE_MAX=96;   // C7
+var NARROW_SPAN=12; // under an octave: warn, few songs fit
+var WIDE_SPAN=36;   // over three octaves: warn, likely an octave typo
+
+// Returns {low, high, lowErr, highErr, error, warning}. low/high are only
+// set when the pair is usable for range matching.
+function validateVocalRange(lowStr,highStr){
+  var r={low:null,high:null,lowErr:'',highErr:'',error:'',warning:''};
+  var lo=parseNoteInput(lowStr),hi=parseNoteInput(highStr);
+  function check(str,m){
+    if(!str) return '';
+    if(m==null) return 'Use a note name and octave, like B3 or F#5.';
+    if(m<VOICE_MIN||m>VOICE_MAX) return midiToNote(m)+' is outside the range of the human voice (A1–C7). Check the octave number: middle C is C4.';
+    return '';
+  }
+  r.lowErr=check(lowStr,lo);
+  r.highErr=check(highStr,hi);
+  if(r.lowErr||r.highErr||lo==null||hi==null) return r;
+  if(lo>hi){r.error='Your lowest note ('+midiToNote(lo)+') is above your highest note ('+midiToNote(hi)+'). Swap them?';return r;}
+  if(lo===hi){r.error='Your lowest and highest notes are the same. Enter the full range you can sing.';return r;}
+  var span=hi-lo;
+  if(span<NARROW_SPAN) r.warning='That range is under an octave ('+span+' semitones). Most songs need at least an octave, so few will fit.';
+  else if(span>WIDE_SPAN) r.warning='That range is over three octaves. Double-check the octave numbers (middle C is C4).';
+  r.low=lo;r.high=hi;
+  return r;
 }
 
 function runtimeToSeconds(s){
@@ -757,14 +794,22 @@ function runPipeline(){
   if(rangeEnabled){
     var lowStr=(document.getElementById('input-low').value||'').trim();
     var highStr=(document.getElementById('input-high').value||'').trim();
-    lowMidi=parseNoteInput(lowStr);
-    highMidi=parseNoteInput(highStr);
+    var vr=validateVocalRange(lowStr,highStr);
+    lowMidi=vr.low;highMidi=vr.high;
 
-    if(hintLow) hintLow.innerHTML=lowStr?(lowMidi!=null?'<span class="parse-ok">MIDI '+lowMidi+'</span>':'<span class="parse-err">Could not parse \''+esc(lowStr)+'\'.</span>'):'';
-    if(hintHigh) hintHigh.innerHTML=highStr?(highMidi!=null?'<span class="parse-ok">MIDI '+highMidi+'</span>':'<span class="parse-err">Could not parse \''+esc(highStr)+'\'.</span>'):'';
+    function fieldHint(el,input,str,err){
+      if(!el) return;
+      el.innerHTML=err?'<span class="parse-err">'+esc(err)+'</span>':
+        (str&&parseNoteInput(str)!=null?'<span class="parse-ok">'+esc(midiToNote(parseNoteInput(str)))+'</span>':'');
+      input.setAttribute('aria-invalid',err?'true':'false');
+    }
+    fieldHint(hintLow,document.getElementById('input-low'),lowStr,vr.lowErr);
+    fieldHint(hintHigh,document.getElementById('input-high'),highStr,vr.highErr);
     if(hintBoth){
-      if(lowMidi!=null&&highMidi!=null) hintBoth.textContent='';
-      else hintBoth.textContent=(lowStr||highStr)?'Enter both notes to sort by range fit.':'';
+      if(vr.error) hintBoth.innerHTML='<span class="parse-err">'+esc(vr.error)+'</span>';
+      else if(vr.warning) hintBoth.innerHTML='<span class="parse-warn">'+esc(vr.warning)+'</span>';
+      else if(!vr.lowErr&&!vr.highErr&&(lowStr||highStr)&&(lowMidi==null)) hintBoth.textContent='Enter both notes to sort by range fit.';
+      else hintBoth.textContent='';
     }
 
     if(lowMidi!=null&&highMidi!=null){

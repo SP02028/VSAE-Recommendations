@@ -115,6 +115,8 @@ select{cursor:pointer;max-width:640px;}
 .parse-hint{font-size:14px;color:var(--muted);margin-top:4px;min-height:20px;}
 .parse-err{color:var(--error);}
 .parse-ok{color:var(--ok);}
+.parse-warn{color:#8A5A00;}
+input[aria-invalid="true"]{border-color:var(--error);}
 .note-callout{display:none;font-size:14px;background:#FFF8D6;border-left:4px solid var(--gold);padding:8px 12px;margin:8px 0 16px;border-radius:0 6px 6px 0;max-width:75ch;}
 
 .feat-grid{display:grid;grid-template-columns:repeat(2,minmax(0,260px));gap:0 24px;}
@@ -265,15 +267,15 @@ td.fit-out{color:var(--error);}
             <div class="input-group">
               <label for="input-low">Your lowest comfortable note</label>
               <input type="text" id="input-low" placeholder="e.g. B3"/>
-              <div class="parse-hint" id="hint-low"></div>
+              <div class="parse-hint" id="hint-low" aria-live="polite"></div>
             </div>
             <div class="input-group">
               <label for="input-high">Your highest comfortable note</label>
               <input type="text" id="input-high" placeholder="e.g. F5"/>
-              <div class="parse-hint" id="hint-high"></div>
+              <div class="parse-hint" id="hint-high" aria-live="polite"></div>
             </div>
           </div>
-          <div class="parse-hint" id="hint-both"></div>
+          <div class="parse-hint" id="hint-both" aria-live="polite"></div>
         </div>
       </section>
 
@@ -342,6 +344,6 @@ td.fit-out{color:var(--error);}
   </div><!-- /app-shell -->
 </main>
 
-<script src="app.js?v=2026-10-11.7"></script>
+<script src="app.js?v=2026-10-11.8"></script>
 </body>
 </html>
