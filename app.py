@@ -15,8 +15,8 @@ import numpy as np
 import os
 import re
 
-from vsae_data import load_and_engineer, build_feature_matrix, RANGE_MIDI_DEFAULTS
-from vsae_contentbased import get_recommendation_scores
+from vsae_data import load_and_engineer, RANGE_MIDI_DEFAULTS
+from vsae_contentbased import get_recommendation_scores, scale_to_best
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -284,11 +284,12 @@ with tab1:
 
     st.subheader("Recommend Songs based on Reference Song (Optional)")
     st.markdown(
-        "This will recommend songs based on relative similarity to a reference song of your choice, based on selected features. "
+        "Pick a reference song and we'll rank the others by how closely they connect to it through shared features. "
+        "The closest match scores 1.00."
     )
 
     similarity_enabled = False
-    use_similarity = st.checkbox("Recommend songs based on relative similarity to a reference song", value=False)
+    use_similarity = st.checkbox("Rank songs by similarity to a reference song", value=False)
 
     if use_similarity:
         rec_df = df.copy()
@@ -311,11 +312,11 @@ with tab1:
             selected_query = next(opt for opt in query_options if opt[0] == selected_label)
             selected_song = selected_query[2]
             selected_query_idx = selected_query[1]
-            similarity_min = st.slider("Minimum similarity score", 0.0, 1.0, 0.0, 0.01)
+            similarity_min = st.slider("Minimum similarity", 0.0, 1.0, 0.0, 0.01)
 
             st.markdown("#### Similarity Features")
+            use_composer = st.checkbox("Composer", value=True)
             use_vocalrange = st.checkbox("Vocal Range", value=True)
-            use_class = st.checkbox("Difficulty (Class)", value=True)
             use_language = st.checkbox("Language", value=True)
             use_genre = st.checkbox("Genre", value=True)
             use_era = st.checkbox("Era / Time Period", value=False)
@@ -324,8 +325,8 @@ with tab1:
             exclude_transpositions = st.checkbox("Exclude other keys of the same piece", value=True)
 
             selected_features = []
+            if use_composer: selected_features.append('Composer')
             if use_vocalrange: selected_features.append('VocalRange')
-            if use_class: selected_features.append('Class')
             if use_language: selected_features.append('Language')
             if use_genre: selected_features.append('Genre')
             if use_era: selected_features.append('Era')
@@ -336,22 +337,30 @@ with tab1:
                 st.warning("Please select at least one feature.")
             else:
                 try:
-                    feat_matrix = build_feature_matrix(rec_df, selected_features)
-                    similarity_series = get_recommendation_scores(
+                    similarity_series, similarity_reasons = get_recommendation_scores(
                         df=rec_df,
-                        feature_matrix=feat_matrix,
+                        selected_features=selected_features,
                         song_title=selected_song,
+                        query_index=selected_query_idx,
                         repertoire_mode='similar',
                         exclude_same_base=exclude_transpositions,
+                        with_reasons=True,
                     )
 
                     scored = filtered.copy()
                     scored['SimilarityScore'] = similarity_series.reindex(scored.index)
                     scored = scored[scored['SimilarityScore'].notna()]
+                    scored['Why'] = similarity_reasons.reindex(scored.index).apply(' · '.join)
+                    # Rescale within the filtered songs so the best visible match is 1.00
+                    scored['SimilarityScore'] = scale_to_best(scored['SimilarityScore'])
                     scored = scored[scored['SimilarityScore'] >= similarity_min]
                     if not scored.empty:
                         filtered = scored
                         similarity_enabled = True
+                        st.caption(
+                            f"Showing similarity scores {scored['SimilarityScore'].min():.2f}–"
+                            f"{scored['SimilarityScore'].max():.2f} (1.00 = closest match)."
+                        )
                     else:
                         st.warning("No songs matched the current similarity settings.")
 
@@ -441,6 +450,9 @@ with tab1:
         'Note Range',
         'Runtime',
     ]
+    if similarity_enabled and 'SimilarityScore' in display.columns:
+        display['Similarity'] = display['SimilarityScore'].round(2)
+        display_cols += ['Similarity', 'Why']
     table = display[display_cols].head(top_k).copy()
     table.index = range(1, len(table) + 1)
     st.dataframe(table, use_container_width=True)

@@ -2,67 +2,209 @@
 vsae_contentbased.py
 --------------------
 Content-based recommendation engine for VSAE songs.
-Mirrors contentbased.py from the original Spotify app:
-  - Same cosine-similarity core
-  - Added: repertoire_mode toggle (similar / different)
-  - Changed: feature matrix comes from vsae_data.build_feature_matrix()
+
+Personalized PageRank over a song–attribute graph (mirrors the JS version in
+self_contained_app.js — keep the constants in sync):
+
+  - Nodes are songs plus one node per attribute value (composer, language,
+    genre tag, class, era, voice, range-span bin, runtime bin).
+  - Each song links to its values; neighbouring ordinal values link to each
+    other (Baroque–Classical, Soprano–Mezzo) for partial credit.
+  - A walk through an attribute node splits its mass across every song that
+    shares the value, so rare shared values count more (IDF-like). Rarity is
+    damped by RARITY_DAMPING so one rare composer can't dominate.
+  - Score = lift = PPR(song) / global PageRank(song).
 """
+
+import re
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics.pairwise import cosine_similarity
-import re
+
+from vsae_data import ERA_ORDER, note_to_midi, normalize_language, runtime_to_seconds
+
+RELATION_WEIGHTS = {
+    'Composer': 0.7,
+    'Language': 1.0,
+    'Genre': 0.8,
+    'Era': 0.6,
+    'VocalRange': 0.8,
+    'RangeSpan': 0.4,
+    'Runtime': 0.3,
+}
+RELATION_LABELS = {
+    'Composer': 'composer', 'Language': 'language', 'Genre': 'genre',
+    'Era': 'era', 'VocalRange': 'voice',
+    'RangeSpan': 'range span', 'Runtime': 'length',
+}
+ORDINAL_RELATIONS = {'Era', 'VocalRange', 'RangeSpan', 'Runtime'}
+PPR_RESTART = 0.25
+NEIGHBOR_SHARE = 0.25
+RARITY_DAMPING = 0.75
+
+VOICE_LADDER = ['Soprano', 'Mezzo Soprano', 'Alto', 'Tenor', 'Baritone', 'Bass']
+SPAN_BINS = [(9, 'narrow range'), (12, 'moderate range'), (15, 'wide range'), (99, 'very wide range')]
+RUNTIME_BINS = [(119, 'under 2 min'), (179, '2–3 min'), (239, '3–4 min'), (99999, 'over 4 min')]
+
+GENRE_TAGS = [
+    ('spiritual', r'spiritual|spirtual|gospel'),
+    ('sacred', r'sacred|hymn'),
+    ('opera / aria', r'opera|aria|operetta'),
+    ('art song', r'art|m.lodie|romance|berceuse|lied'),
+    ('folk', r'folk|shanty|ballad|tonadilla'),
+    ('madrigal', r'madrigal|mardrigal'),
+    ('classical', r'classic'),
+]
+
+TRANSPOSITION_RE = re.compile(
+    r'\s*\((High|Low|Medium|Vocal All|Bass|Baritone|Soprano|Alto|Tenor|Mezzo(?: Soprano)?)[^)]*\)\s*$',
+    flags=re.IGNORECASE,
+)
 
 
-def _compute_pagerank_scores(
-    feature_matrix: np.ndarray,
-    query_idx: int,
-    repertoire_mode: str,
-) -> np.ndarray:
-    sim_matrix = cosine_similarity(feature_matrix)
-    np.fill_diagonal(sim_matrix, 0.0)
+def genre_tags(genre) -> list:
+    low = str(genre or '').lower()
+    return [tag for tag, pattern in GENRE_TAGS if re.search(pattern, low)]
 
-    n = sim_matrix.shape[0]
-    k = min(12, max(3, n // 10))
-    pruned = np.zeros_like(sim_matrix)
-    if n > 1:
-        for i in range(n):
-            row = sim_matrix[i]
-            top_idx = np.argsort(row)[-k:]
-            pruned[i, top_idx] = np.clip(row[top_idx], 0.0, None)
 
-    row_sums = pruned.sum(axis=1, keepdims=True)
-    transition = np.divide(
-        pruned,
-        np.where(row_sums == 0, 1.0, row_sums),
-        where=True,
-    )
+def _bin(bins, value) -> int:
+    for i, (upper, _) in enumerate(bins):
+        if value <= upper:
+            return i
+    return len(bins) - 1
 
-    alpha = 0.85
-    teleport = np.zeros(n)
-    teleport[query_idx] = 1.0
-    rank = teleport.copy()
-    for _ in range(100):
-        next_rank = alpha * (transition.T @ rank) + (1.0 - alpha) * teleport
-        if np.linalg.norm(next_rank - rank, ord=1) < 1e-10:
-            rank = next_rank
-            break
-        rank = next_rank
 
-    if repertoire_mode == 'different':
-        return 1.0 - rank
-    return rank
+class SongGraph:
+    def __init__(self, df: pd.DataFrame, relations: list):
+        self.n_songs = len(df)
+        self.ids = {}
+        self.nodes = []  # (relation, label); songs use relation 'song'
+        edges = {}
+
+        def node(key, rel, label):
+            if key not in self.ids:
+                self.ids[key] = len(self.nodes)
+                self.nodes.append((rel, label))
+            return self.ids[key]
+
+        def link(a, b, w):
+            edges[(a, b)] = edges.get((a, b), 0.0) + w
+            edges[(b, a)] = edges.get((b, a), 0.0) + w
+
+        for i, title in enumerate(df['Title']):
+            node(f'song:{i}', 'song', title)
+
+        for i, (_, s) in enumerate(df.iterrows()):
+            w = RELATION_WEIGHTS
+            if 'Composer' in relations and str(s.get('Composer') or '').strip():
+                c = str(s['Composer']).strip()
+                link(i, node(f'composer:{c.lower()}', 'Composer', c), w['Composer'])
+            if 'Language' in relations:
+                lang = normalize_language(pd.Series([s.get('Language')])).iloc[0]
+                link(i, node(f'lang:{lang}', 'Language', lang.title()), w['Language'])
+            if 'Genre' in relations:
+                tags = genre_tags(s.get('Genre'))
+                for t in tags:
+                    link(i, node(f'genre:{t}', 'Genre', t.title()), w['Genre'] / len(tags))
+            if 'Era' in relations and s.get('Era') in ERA_ORDER:
+                link(i, node(f"era:{s['Era']}", 'Era', s['Era']), w['Era'])
+            if 'VocalRange' in relations:
+                vr = s.get('VocalRange')
+                if vr == 'Vocal All':
+                    for v in VOICE_LADDER:
+                        link(i, node(f'voice:{v}', 'VocalRange', v), w['VocalRange'] / len(VOICE_LADDER))
+                elif vr in VOICE_LADDER:
+                    link(i, node(f'voice:{vr}', 'VocalRange', vr), w['VocalRange'])
+            if ('RangeSpan' in relations and note_to_midi(s.get('Highest Note')) is not None
+                    and note_to_midi(s.get('Lowest Note')) is not None):
+                b = _bin(SPAN_BINS, s['RangeSpan'])
+                link(i, node(f'span:{b}', 'RangeSpan', SPAN_BINS[b][1]), w['RangeSpan'])
+            if 'Runtime' in relations and runtime_to_seconds(s.get('Runtime of Song')) is not None:
+                b = _bin(RUNTIME_BINS, s['RuntimeSeconds'])
+                link(i, node(f'runtime:{b}', 'Runtime', RUNTIME_BINS[b][1]), w['Runtime'])
+
+        N = len(self.nodes)
+        W = np.zeros((N, N))
+        for (a, b), w in edges.items():
+            W[a, b] = w
+
+        # Rarity damping: scale each value's song edges by (#songs)^beta.
+        n = self.n_songs
+        for a in range(n, N):
+            count = np.count_nonzero(W[a, :n])
+            scale = count ** RARITY_DAMPING
+            W[a, :n] *= scale
+            W[:n, a] *= scale
+
+        def chain(prefix, values):
+            for x, y in zip(values, values[1:]):
+                a, b = self.ids.get(f'{prefix}{x}'), self.ids.get(f'{prefix}{y}')
+                if a is None or b is None:
+                    continue
+                w = NEIGHBOR_SHARE * min(W[a].sum(), W[b].sum())
+                W[a, b] += w
+                W[b, a] += w
+
+        chain('era:', ERA_ORDER)
+        chain('voice:', VOICE_LADDER)
+        chain('span:', list(range(len(SPAN_BINS))))
+        chain('runtime:', list(range(len(RUNTIME_BINS))))
+
+        self.W = W
+        self.deg = W.sum(axis=1)
+        teleport = np.zeros(N)
+        teleport[:n] = 1.0 / n
+        self.baseline = self.random_walk(teleport)
+
+    def random_walk(self, teleport: np.ndarray) -> np.ndarray:
+        safe_deg = np.where(self.deg == 0, 1.0, self.deg)
+        rank = teleport.copy()
+        for _ in range(200):
+            # W is symmetric, so P^T r == W @ (r / deg)
+            nxt = (1.0 - PPR_RESTART) * (self.W @ (rank / safe_deg)) + PPR_RESTART * teleport
+            if np.abs(nxt - rank).sum() < 1e-12:
+                return nxt
+            rank = nxt
+        return rank
+
+    def personalized(self, song_pos: int) -> np.ndarray:
+        teleport = np.zeros(len(self.nodes))
+        teleport[song_pos] = 1.0
+        return self.random_walk(teleport)
+
+    def explain(self, ppr: np.ndarray, song_pos: int, query_pos: int) -> list:
+        n = self.n_songs
+        shared = set(np.nonzero(self.W[query_pos])[0])
+        attrs = np.nonzero(self.W[song_pos, n:])[0] + n
+        flows = sorted(((ppr[a] * self.W[song_pos, a] / self.deg[a], a) for a in attrs), reverse=True)
+        total = sum(f for f, _ in flows)
+        out = []
+        for f, a in flows:
+            if len(out) >= 3 or f < 0.12 * total:
+                break
+            rel, label = self.nodes[a]
+            if a not in shared and rel not in ORDINAL_RELATIONS:
+                continue
+            text = label if a in shared else f'similar {RELATION_LABELS[rel]}'
+            if text not in out:
+                out.append(text)
+        return out
 
 
 def get_recommendation_scores(
     df: pd.DataFrame,
-    feature_matrix: np.ndarray,
+    selected_features: list,
     song_title: str,
-    query_index: int | None = None,
+    query_index=None,
     repertoire_mode: str = 'similar',
     exclude_same_base: bool = True,
-) -> pd.Series:
-    """Return PageRank-based scores for all songs indexed by df.index."""
+    with_reasons: bool = False,
+):
+    """Return lift scores indexed by df.index (NaN for the query and excluded
+    songs). Pass the result through scale_to_best() before showing it.
+    With with_reasons=True, also return a Series of "why" label lists."""
+    if not selected_features:
+        raise ValueError("No features selected.")
     if query_index is not None:
         if query_index not in df.index:
             raise ValueError(f"Query index '{query_index}' not found in dataset.")
@@ -73,67 +215,72 @@ def get_recommendation_scores(
             raise ValueError(f"Song '{song_title}' not found in dataset.")
         query_idx = matches.index[0]
     query_pos = df.index.get_loc(query_idx)
-    scores = _compute_pagerank_scores(feature_matrix, query_pos, repertoire_mode)
 
-    score_series = pd.Series(scores, index=df.index, dtype=float)
+    graph = SongGraph(df, selected_features)
+    ppr = graph.personalized(query_pos)
+    n = graph.n_songs
+    base = graph.baseline[:n]
+    lift = np.where(base > 0, ppr[:n] / np.where(base > 0, base, 1.0), 0.0)
+
+    score_series = pd.Series(lift, index=df.index, dtype=float)
     score_series.loc[query_idx] = np.nan
 
     if exclude_same_base:
-        base = re.sub(
-            r'\s*\((High|Low|Medium|Vocal All|Bass|Baritone|Soprano|Alto|Tenor|Mezzo Soprano)[^)]*\)\s*$',
-            '',
-            song_title,
-            flags=re.IGNORECASE,
-        ).strip()
-        base_mask = df['Title'].fillna('').astype(str).str.startswith(base)
+        base_title = TRANSPOSITION_RE.sub('', song_title).strip()
+        base_mask = df['Title'].fillna('').astype(str).str.startswith(base_title)
         score_series.loc[base_mask] = np.nan
 
-    return score_series
+    if repertoire_mode == 'different':
+        score_series = 1.0 / score_series.where(score_series > 0)
+
+    if not with_reasons:
+        return score_series
+    reasons = pd.Series(
+        [graph.explain(ppr, pos, query_pos) for pos in range(n)], index=df.index, dtype=object
+    )
+    return score_series, reasons
+
+
+def scale_to_best(scores: pd.Series) -> pd.Series:
+    """Log-scale lift to 0–1 between the weakest and strongest scores given
+    (1.00 = best match among them). NaNs are left untouched."""
+    valid = scores.dropna()
+    if valid.empty:
+        return scores
+    hi = valid.max()
+    if hi <= 0:
+        return scores
+    lo = max(valid.min(), hi * 1e-4)
+    span = np.log(hi / lo)
+    if span <= 0:
+        return scores.where(scores.isna(), 1.0)
+    return (np.log(scores.clip(lower=lo) / lo) / span).clip(0.0, 1.0)
 
 
 def get_recommendations(
     df: pd.DataFrame,
-    feature_matrix: np.ndarray,
+    selected_features: list,
     song_title: str,
     top_n: int = 5,
     repertoire_mode: str = 'similar',   # 'similar' | 'different'
     exclude_same_base: bool = True,
 ) -> pd.DataFrame:
-    """
-    Return the top-N recommended songs given a query song title.
-
-    Parameters
-    ----------
-    df               : The full VSAE DataFrame (from load_and_engineer).
-    feature_matrix   : Pre-built feature matrix (from build_feature_matrix).
-    song_title       : Exact title string as it appears in df['Title'].
-    top_n            : Number of recommendations to return.
-    repertoire_mode  : 'similar' → highest cosine sim.
-                       'different' → lowest cosine sim (1 - score).
-    exclude_same_base: If True, exclude transpositions of the same piece
-                       (rows sharing the same base title before " (High/Low/Medium)").
-
-    Returns
-    -------
-    DataFrame with columns: Title, Composer, VocalRange, Class, Language,
-                             Genre, Era, RangeSpan, RuntimeSeconds, Score
-    """
-    score_series = get_recommendation_scores(
+    """Return the top-N recommended songs for a query song title, with a
+    0–1 Score column and a Why column."""
+    scores, reasons = get_recommendation_scores(
         df=df,
-        feature_matrix=feature_matrix,
+        selected_features=selected_features,
         song_title=song_title,
         repertoire_mode=repertoire_mode,
         exclude_same_base=exclude_same_base,
+        with_reasons=True,
     )
-
     results = df.copy()
-    results['Score'] = score_series
-    results = results[results['Score'].notna()]
-
-    # Sort (highest score first)
-    results = results.sort_values('Score', ascending=False)
+    results['Score'] = scale_to_best(scores)
+    results['Why'] = reasons.apply(lambda r: ' · '.join(r))
+    results = results[results['Score'].notna()].sort_values('Score', ascending=False)
 
     output_cols = ['Title', 'Composer', 'VocalRange', 'Class', 'Language',
-                   'Genre', 'Era', 'RangeSpan', 'RuntimeSeconds', 'Score']
+                   'Genre', 'Era', 'Score', 'Why']
     available = [c for c in output_cols if c in results.columns]
     return results[available].head(top_n).reset_index(drop=True)

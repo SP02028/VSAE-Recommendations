@@ -95,6 +95,7 @@ def load_and_engineer(csv_path: str) -> pd.DataFrame:
     df = df.reset_index(drop=True)
 
     # ── Derived: Era ──────────────────────────────────────────────────────────
+    df['Language'] = normalize_language(df['Language']).str.title()  # 'English?', 'italian'
     df['Era'] = df['Time Period'].apply(era_from_period)
 
     # ── Derived: MIDI notes & range span ──────────────────────────────────────
@@ -128,6 +129,23 @@ def load_and_engineer(csv_path: str) -> pd.DataFrame:
     return df
 
 
+def _ordinal_columns(x: np.ndarray, weight: float) -> np.ndarray:
+    """Encode x in [0, 1] as an angle: [cos(pi*x/2), sin(pi*x/2)] * weight.
+
+    Cosine between two encodings is cos(pi/2 * |a - b|), so it depends only on
+    distance. A single positive column made cosine favor larger values (e.g. a
+    Class A reference ranked Class C songs above Class A songs).
+    """
+    t = np.clip(np.asarray(x, dtype=float), 0.0, 1.0).reshape(-1, 1) * (np.pi / 2)
+    return np.hstack([np.cos(t), np.sin(t)]) * weight
+
+
+def normalize_language(series: pd.Series) -> pd.Series:
+    """'English?', 'italian' -> 'english', 'italian' so they share a category."""
+    cleaned = series.fillna('').astype(str).str.replace('?', '', regex=False).str.strip().str.lower()
+    return cleaned.replace('', 'english')
+
+
 def build_feature_matrix(df: pd.DataFrame, selected_features: list) -> np.ndarray:
     """
     Build the normalized numerical feature matrix for cosine similarity.
@@ -144,11 +162,10 @@ def build_feature_matrix(df: pd.DataFrame, selected_features: list) -> np.ndarra
         parts.append(dummies.values * 3.0)   # weight boost (hard constraint)
 
     if 'Class' in selected_features:
-        vals = df['ClassOrdinal'].values.reshape(-1, 1) / 3.0
-        parts.append(vals * 2.5)              # weight boost
+        parts.append(_ordinal_columns((df['ClassOrdinal'].values - 1) / 2.0, 2.5))
 
     if 'Language' in selected_features:
-        dummies = pd.get_dummies(df['Language'].fillna('English'), prefix='Lang')
+        dummies = pd.get_dummies(normalize_language(df['Language']), prefix='Lang')
         parts.append(dummies.values * 1.5)
 
     if 'Genre' in selected_features:
@@ -158,20 +175,19 @@ def build_feature_matrix(df: pd.DataFrame, selected_features: list) -> np.ndarra
         parts.append(dummies.values * 1.5)
 
     if 'Era' in selected_features:
-        vals = df['EraOrdinal'].values.reshape(-1, 1) / 5.0
-        parts.append(vals * 1.0)
+        parts.append(_ordinal_columns((df['EraOrdinal'].values - 1) / 4.0, 1.0))
 
     if 'RangeSpan' in selected_features:
         raw = df['RangeSpan'].values.reshape(-1, 1).astype(float)
         mn, mx = raw.min(), raw.max()
         normed = (raw - mn) / (mx - mn + 1e-9)
-        parts.append(normed * 1.0)
+        parts.append(_ordinal_columns(normed, 1.0))
 
     if 'Runtime' in selected_features:
         raw = df['RuntimeSeconds'].values.reshape(-1, 1).astype(float)
         mn, mx = raw.min(), raw.max()
         normed = (raw - mn) / (mx - mn + 1e-9)
-        parts.append(normed * 0.5)
+        parts.append(_ordinal_columns(normed, 0.5))
 
     if not parts:
         raise ValueError("No features selected.")

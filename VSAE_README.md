@@ -7,7 +7,7 @@ Adapted from [music-recommendation-app](https://github.com/SP02028/music-recomme
 | File | Original | VSAE Version |
 |---|---|---|
 | `setup.py` / data loading | Downloads Spotify CSVs from GCS | **Replaced by `vsae_data.py`** — loads local VSAE CSV, computes MIDI note ranges, era bucketing, runtime parsing |
-| `contentbased.py` | Cosine sim on Spotify audio features | **Replaced by `vsae_contentbased.py`** — same cosine sim core, VSAE feature matrix, + repertoire toggle |
+| `contentbased.py` | Cosine sim on Spotify audio features | **Replaced by `vsae_contentbased.py`** — personalized PageRank over a cosine-similarity graph, VSAE feature matrix, + repertoire toggle |
 | `helper.py` | Genre filter + popularity sort | **Merged into Tab 1 of app.py** — VocalRange + Class + Language filter |
 | `app.py` | 3-tab Streamlit app | **Updated labels/features only** — same layout, same UX pattern |
 | `header.py` / `response.py` | Display helpers | Inlined into app.py (kept simple) |
@@ -46,17 +46,17 @@ no code changes required. The feature pipeline auto-handles:
 - Era bucketing from time period strings
 - Runtime M:SS → seconds parsing
 
-## Repertoire Mode
+## Similarity scoring
 
-The **one** logic change to the similarity engine:
+`vsae_contentbased.py` (and the same logic in `self_contained_app.js`) ranks songs with
+**personalized PageRank** seeded at the reference song:
 
-```python
-# similar  → highest cosine scores
-scores = cosine_similarity(query_vec, feature_matrix)[0]
+1. Build the feature matrix. Categorical features are one-hot; ordinal/numeric features
+   (Class, Era, Range span, Runtime) are encoded as an angle `[cos(πx/2), sin(πx/2)]` so
+   cosine similarity depends on distance, not magnitude.
+2. Connect every pair of songs with weight `cosine^4` (dense graph, no top-k pruning).
+3. Run PageRank with restart probability 0.3 back to the reference song.
+4. Divide each song's PageRank mass by its degree (removes "hub" bias), then scale so the
+   best match among the currently filtered songs is 1.00.
 
-# different → invert scores
-if repertoire_mode == 'different':
-    scores = 1.0 - scores
-```
-
-This is exposed as a radio button in the UI.
+`repertoire_mode='different'` returns `1 - score`.

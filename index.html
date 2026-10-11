@@ -131,6 +131,7 @@ tbody td{padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowra
 tbody tr:nth-child(even) td{background:#F7F8F8;}
 tbody tr:hover td{background:#E9F3EE;}
 td.num{color:var(--muted);}
+.why{white-space:normal;min-width:180px;color:var(--muted);font-size:13px;}
 .empty-row{padding:40px;text-align:center;color:var(--muted);}
 
 /* ── metric cards ── */
@@ -212,7 +213,10 @@ td.num{color:var(--muted);}
       <section class="section" aria-labelledby="h-similar">
         <h3 id="h-similar">Find songs like one you know (optional)</h3>
         <p class="caption">
-          Pick a reference song and we'll rank the other songs by how similar they are, using the features you choose below.
+          Pick a reference song and we'll rank the others by how strongly they connect to it through shared composers,
+          languages, genres and more. Rare connections (the same composer) count more than common ones (both in English).
+          Difficulty isn't compared, since you choose your class above. The closest match scores 1.00,
+          and the Why column shows the strongest connections.
         </p>
         <label class="check-row">
           <input type="checkbox" id="chk-similarity"/>
@@ -234,8 +238,8 @@ td.num{color:var(--muted);}
 
           <h4>Compare songs by</h4>
           <div class="feat-grid">
+            <label class="check-row"><input type="checkbox" id="feat-composer" checked/> Composer</label>
             <label class="check-row"><input type="checkbox" id="feat-vocalrange" checked/> Vocal range</label>
-            <label class="check-row"><input type="checkbox" id="feat-class" checked/> Difficulty class</label>
             <label class="check-row"><input type="checkbox" id="feat-language" checked/> Language</label>
             <label class="check-row"><input type="checkbox" id="feat-genre" checked/> Genre</label>
             <label class="check-row"><input type="checkbox" id="feat-era"/> Era / time period</label>
@@ -339,6 +343,6 @@ td.num{color:var(--muted);}
   </div><!-- /app-shell -->
 </main>
 
-<script src="app.js?v=2026-10-11.3"></script>
+<script src="app.js?v=2026-10-11.4"></script>
 </body>
 </html>

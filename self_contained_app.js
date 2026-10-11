@@ -40,6 +40,12 @@ function esc(v){
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
+// Language values in the sheet vary in case and sometimes carry a '?'
+// (e.g. 'English?', 'italian'); compare on a cleaned form.
+function normLang(v){
+  return String(v||'').replace(/\?/g,'').trim().toLowerCase()||'english';
+}
+
 function uniq(arr){
   var s={},o=[];
   arr.forEach(function(v){var t=String(v||'').trim();if(t&&!s[t]){s[t]=1;o.push(t);}});
@@ -111,6 +117,7 @@ function inferEra(tp){
 function engineerFeatures(songs){
   var rts=[];
   songs.forEach(function(s){
+    s.Language=titleCase(normLang(s.Language));  // 'English?', 'italian' → 'English', 'Italian'
     s.Era=inferEra(s['Time Period']);
     var d=VR_DEFAULTS[s.VocalRange]||null;
     var hi=noteToMidi(s['Highest Note']); if(hi==null&&d) hi=d.high; s.HighestNote_MIDI=hi;
@@ -120,7 +127,8 @@ function engineerFeatures(songs){
     var ck={A:1,B:2,C:3}; s.ClassOrdinal=ck[String(s.Class||'').trim().toUpperCase()]||2;
     var ek={Renaissance:1,Baroque:2,Classical:3,Romantic:4,Modern:5,Unknown:3};
     s.EraOrdinal=ek[s.Era]||3;
-    s._pprScore=null;
+    s._similarityScore=null;
+    s._pprRaw=null;
   });
   var med=median(rts);
   if(med!=null) songs.forEach(function(s){if(s.RuntimeSeconds==null) s.RuntimeSeconds=Math.round(med);});
@@ -140,93 +148,208 @@ function isMissingData(s){
 }
 
 // ════════════════════════════════════════════════════════════════
-// FEATURE MATRIX
+// SONG–ATTRIBUTE GRAPH + PERSONALIZED PAGERANK
 // ════════════════════════════════════════════════════════════════
-function normalizeMinMax(vals){
-  var mn=Infinity,mx=-Infinity;
-  vals.forEach(function(v){var n=Number(v);if(isFinite(n)){if(n<mn)mn=n;if(n>mx)mx=n;}});
-  if(!isFinite(mn)||mn===mx) return vals.map(function(){return 0;});
-  var span=mx-mn;
-  return vals.map(function(v){var n=Number(v);return isFinite(n)?(n-mn)/span:0;});
+// Nodes are songs plus one node per attribute value (composer:scarlatti,
+// lang:italian, class:A, era:Baroque, voice:Soprano, ...). Each song links
+// to its attribute values; neighbouring ordinal values link to each other
+// (Baroque–Classical, Soprano–Mezzo) so close values earn partial
+// credit through 2-hop paths.
+//
+// A walk from the reference song that passes through an attribute node
+// splits its mass across every song sharing that value, so a rare shared
+// value (a composer with 6 songs) counts far more than a common one
+// (English, 248 songs) — an IDF-like weighting that falls out of the walk.
+//
+// Score = lift = PPR(song) / PageRank(song). Dividing by global PageRank
+// removes the advantage of songs whose attributes are simply common.
+
+// Relation weights. The "Compare songs by" checkboxes switch these on/off.
+var RELATIONS={
+  Composer:  {weight:0.7, label:'composer'},
+  Language:  {weight:1.0, label:'language'},
+  Genre:     {weight:0.8, label:'genre'},
+  Era:       {weight:0.6, label:'era'},
+  VocalRange:{weight:0.8, label:'voice'},
+  RangeSpan: {weight:0.4, label:'range span'},
+  Runtime:   {weight:0.3, label:'length'}
+};
+var PPR_RESTART=0.25;
+var NEIGHBOR_SHARE=0.25;  // how strongly adjacent ordinal values connect
+// Rarity damping β: each song→value edge is scaled by (songs with that
+// value)^β. β=0 is the walk's raw IDF effect, where one composer with three
+// songs outweighs language, class and genre together; β=1 removes rarity
+// entirely. 0.75 was chosen by checking reference songs: at 0.5 a composer
+// with three songs still put a Mezzo art song first for a Bass folk song.
+var RARITY_DAMPING=0.75;
+
+var VOICE_LADDER=['Soprano','Mezzo Soprano','Alto','Tenor','Baritone','Bass'];
+var SPAN_BINS=[{max:9,label:'narrow range'},{max:12,label:'moderate range'},{max:15,label:'wide range'},{max:99,label:'very wide range'}];
+var RUNTIME_BINS=[{max:119,label:'under 2 min'},{max:179,label:'2–3 min'},{max:239,label:'3–4 min'},{max:99999,label:'over 4 min'}];
+
+// The Genre column is free text ("Classical / Folk", "spirtual", "Mélodie/Classic").
+// Map it to a few tags; a song can carry more than one. Era words used as
+// genres ("Baroque", "Romantic") are left to the Era relation.
+var GENRE_TAGS=[
+  ['spiritual',/spiritual|spirtual|gospel/],
+  ['sacred',/sacred|hymn/],
+  ['opera / aria',/opera|aria|operetta/],
+  ['art song',/art|m.lodie|romance|berceuse|lied/],
+  ['folk',/folk|shanty|ballad|tonadilla/],
+  ['madrigal',/madrigal|mardrigal/],
+  ['classical',/classic/]
+];
+function genreTags(g){
+  var low=String(g||'').toLowerCase(),out=[];
+  GENRE_TAGS.forEach(function(t){if(t[1].test(low)) out.push(t[0]);});
+  return out;
 }
 
-function buildFeatureMatrix(songs,features){
-  if(!features||!features.length) throw new Error('No features selected');
-  var matrix=songs.map(function(){return[];});
-  function has(f){return features.indexOf(f)>=0;}
-
-  if(has('VocalRange')){
-    var vrCats=uniq(songs.map(function(s){return s.VocalRange||'Vocal All';}));
-    songs.forEach(function(s,i){vrCats.forEach(function(c){matrix[i].push(((s.VocalRange||'Vocal All')===c?1:0)*3);});});
-  }
-  if(has('Class')){
-    songs.forEach(function(s,i){matrix[i].push((s.ClassOrdinal/3)*2.5);});
-  }
-  if(has('Language')){
-    var langCats=uniq(songs.map(function(s){return s.Language||'English';}));
-    songs.forEach(function(s,i){langCats.forEach(function(c){matrix[i].push(((s.Language||'English')===c?1:0)*1.5);});});
-  }
-  if(has('Genre')){
-    var genreCats=uniq(songs.map(function(s){return(s.Genre||'unknown').toLowerCase();}));
-    songs.forEach(function(s,i){var g=(s.Genre||'unknown').toLowerCase();genreCats.forEach(function(c){matrix[i].push((g===c?1:0)*1.5);});});
-  }
-  if(has('Era')){
-    songs.forEach(function(s,i){matrix[i].push((s.EraOrdinal/5)*1);});
-  }
-  if(has('RangeSpan')){
-    var rsNorm=normalizeMinMax(songs.map(function(s){return s.RangeSpan||0;}));
-    songs.forEach(function(s,i){matrix[i].push(rsNorm[i]);});
-  }
-  if(has('Runtime')){
-    var rtNorm=normalizeMinMax(songs.map(function(s){return s.RuntimeSeconds||0;}));
-    songs.forEach(function(s,i){matrix[i].push(rtNorm[i]*0.5);});
-  }
-  return matrix;
+function binLabel(bins,v){
+  for(var i=0;i<bins.length;i++) if(v<=bins[i].max) return i;
+  return bins.length-1;
 }
 
-// ════════════════════════════════════════════════════════════════
-// PERSONALIZED PAGERANK
-// ════════════════════════════════════════════════════════════════
-function cosine(a,b){
-  var dot=0,na=0,nb=0,len=Math.min(a.length,b.length);
-  for(var i=0;i<len;i++){dot+=a[i]*b[i];na+=a[i]*a[i];nb+=b[i]*b[i];}
-  if(!na||!nb) return 0;
-  return Math.min(1,Math.max(0,dot/(Math.sqrt(na)*Math.sqrt(nb))));
+function titleCase(s){return s.replace(/\b\w/g,function(c){return c.toUpperCase();});}
+
+function buildAttributeGraph(songs,relations){
+  var n=songs.length,ids={},nodes=[],adj=[];
+  function node(key,rel,label){
+    if(!(key in ids)){ids[key]=nodes.length;nodes.push({key:key,rel:rel,label:label});adj.push({});}
+    return ids[key];
+  }
+  function link(a,b,w){adj[a][b]=(adj[a][b]||0)+w;adj[b][a]=(adj[b][a]||0)+w;}
+  function on(r){return relations.indexOf(r)>=0;}
+  songs.forEach(function(s,i){node('song:'+i,'song',s.Title);});
+
+  songs.forEach(function(s,i){
+    var u=i;
+    if(on('Composer')&&String(s.Composer||'').trim()){
+      var c=s.Composer.trim();
+      link(u,node('composer:'+c.toLowerCase(),'Composer',c),RELATIONS.Composer.weight);
+    }
+    if(on('Language')){
+      var l=normLang(s.Language);
+      link(u,node('lang:'+l,'Language',titleCase(l)),RELATIONS.Language.weight);
+    }
+    if(on('Genre')){
+      var tags=genreTags(s.Genre);
+      tags.forEach(function(t){link(u,node('genre:'+t,'Genre',titleCase(t)),RELATIONS.Genre.weight/tags.length);});
+    }
+    if(on('Era')&&s.Era&&s.Era!=='Unknown'){
+      link(u,node('era:'+s.Era,'Era',s.Era),RELATIONS.Era.weight);
+    }
+    if(on('VocalRange')&&s.VocalRange){
+      if(s.VocalRange==='Vocal All'){
+        // Vocal All songs can be sung by any voice: spread the link evenly.
+        VOICE_LADDER.forEach(function(v){link(u,node('voice:'+v,'VocalRange',v),RELATIONS.VocalRange.weight/VOICE_LADDER.length);});
+      }else if(VOICE_LADDER.indexOf(s.VocalRange)>=0){
+        link(u,node('voice:'+s.VocalRange,'VocalRange',s.VocalRange),RELATIONS.VocalRange.weight);
+      }
+    }
+    if(on('RangeSpan')&&noteToMidi(s['Highest Note'])!=null&&noteToMidi(s['Lowest Note'])!=null){
+      var b=binLabel(SPAN_BINS,s.RangeSpan);
+      link(u,node('span:'+b,'RangeSpan',SPAN_BINS[b].label),RELATIONS.RangeSpan.weight);
+    }
+    if(on('Runtime')&&runtimeToSeconds(s['Runtime of Song'])!=null){
+      var rb=binLabel(RUNTIME_BINS,s.RuntimeSeconds);
+      link(u,node('runtime:'+rb,'Runtime',RUNTIME_BINS[rb].label),RELATIONS.Runtime.weight);
+    }
+  });
+
+  // Rarity damping (see RARITY_DAMPING).
+  for(var a0=n;a0<nodes.length;a0++){
+    var members=Object.keys(adj[a0]).filter(function(k){return +k<n;});
+    var scale=Math.pow(members.length,RARITY_DAMPING);
+    members.forEach(function(k){adj[a0][k]*=scale;adj[k][a0]*=scale;});
+  }
+
+  // Ordinal neighbours, weighted relative to how many songs each value has
+  // so a walker at "Class A" steps to "Class B" ~20% of the time.
+  function chain(prefix,values){
+    for(var k=0;k+1<values.length;k++){
+      var a=ids[prefix+values[k]],b=ids[prefix+values[k+1]];
+      if(a==null||b==null) continue;
+      var da=0,db=0,x;
+      for(x in adj[a]) da+=adj[a][x];
+      for(x in adj[b]) db+=adj[b][x];
+      link(a,b,NEIGHBOR_SHARE*Math.min(da,db));
+    }
+  }
+  chain('era:',ERA_KEYS);
+  chain('voice:',VOICE_LADDER);
+  chain('span:',SPAN_BINS.map(function(_,i){return i;}));
+  chain('runtime:',RUNTIME_BINS.map(function(_,i){return i;}));
+
+  // Flatten to arrays for the power iteration.
+  var N=nodes.length,nbr=[],wts=[],deg=new Float64Array(N);
+  for(var v=0;v<N;v++){
+    var ks=Object.keys(adj[v]);
+    nbr.push(new Int32Array(ks.map(Number)));
+    wts.push(new Float64Array(ks.map(function(k){return adj[v][k];})));
+    for(var t=0;t<ks.length;t++) deg[v]+=wts[v][t];
+  }
+  var g={N:N,nSongs:n,nodes:nodes,nbr:nbr,wts:wts,deg:deg};
+  // Global PageRank with restarts spread over all songs = how reachable a
+  // song is from anywhere; the baseline for lift.
+  var teleport=new Float64Array(N);
+  for(var i=0;i<n;i++) teleport[i]=1/n;
+  g.baseline=randomWalk(g,teleport);
+  return g;
 }
 
-function computePPR(matrix,queryIdx){
-  var n=matrix.length;
-  var sim=[];
-  for(var i=0;i<n;i++){sim.push(new Float64Array(n));}
-  for(var i=0;i<n;i++) for(var j=0;j<n;j++) sim[i][j]=i===j?0:cosine(matrix[i],matrix[j]);
-  var k=Math.min(12,Math.max(3,Math.floor(n/10)));
-  var sparse=[];
-  for(var i=0;i<n;i++){sparse.push(new Float64Array(n));}
-  for(var i=0;i<n;i++){
-    var row=Array.from(sim[i]).map(function(v,j){return{j:j,v:v};}).sort(function(a,b){return b.v-a.v;});
-    for(var t=0;t<Math.min(k,row.length);t++) sparse[i][row[t].j]=Math.max(0,row[t].v);
-  }
-  var T=[];
-  for(var i=0;i<n;i++){
-    T.push(new Float64Array(n));
-    var sum=0; for(var j=0;j<n;j++) sum+=sparse[i][j];
-    if(sum>0) for(var j=0;j<n;j++) T[i][j]=sparse[i][j]/sum;
-  }
-  var alpha=0.85;
-  var teleport=new Float64Array(n); teleport[queryIdx]=1;
-  var rank=new Float64Array(teleport);
-  for(var iter=0;iter<100;iter++){
-    var next=new Float64Array(n);
-    for(var j=0;j<n;j++){var s=0;for(var i=0;i<n;i++) s+=T[i][j]*rank[i];next[j]=alpha*s+(1-alpha)*teleport[j];}
-    var l1=0;for(var i=0;i<n;i++) l1+=Math.abs(next[i]-rank[i]);
+function randomWalk(g,teleport){
+  var N=g.N,rank=new Float64Array(teleport);
+  for(var iter=0;iter<200;iter++){
+    var next=new Float64Array(N);
+    for(var u=0;u<N;u++){
+      if(!rank[u]||!g.deg[u]) continue;
+      var f=(1-PPR_RESTART)*rank[u]/g.deg[u],nb=g.nbr[u],w=g.wts[u];
+      for(var t=0;t<nb.length;t++) next[nb[t]]+=f*w[t];
+    }
+    var l1=0;
+    for(var v=0;v<N;v++){next[v]+=PPR_RESTART*teleport[v];l1+=Math.abs(next[v]-rank[v]);}
     rank=next;
-    if(l1<1e-10) break;
+    if(l1<1e-12) break;
   }
   return rank;
 }
 
+function personalizedPageRank(g,songIdx){
+  var teleport=new Float64Array(g.N);teleport[songIdx]=1;
+  return randomWalk(g,teleport);
+}
+
+// "Why" for one candidate: the attribute nodes that sent it the most mass
+// in the final step of the walk. Values the reference doesn't share but is
+// next to (Class B for a Class A reference) are reported as "similar …".
+function explainScore(g,ppr,songIdx,queryIdx){
+  var qLinks={},nb=g.nbr[queryIdx];
+  for(var t=0;t<nb.length;t++) qLinks[nb[t]]=1;
+  var flows=[],total=0,cn=g.nbr[songIdx],cw=g.wts[songIdx];
+  for(var t2=0;t2<cn.length;t2++){
+    var a=cn[t2];
+    if(a<g.nSongs) continue;
+    var f=ppr[a]*cw[t2]/g.deg[a];
+    total+=f;flows.push({node:g.nodes[a],shared:!!qLinks[a],flow:f});
+  }
+  flows.sort(function(x,y){return y.flow-x.flow;});
+  var seen={},out=[];
+  flows.forEach(function(x){
+    if(out.length>=3||x.flow<0.12*total) return;
+    // Only ordinal values have neighbours; any other unshared value got its
+    // mass via longer paths and isn't a meaningful reason to show.
+    var ordinal=['Era','VocalRange','RangeSpan','Runtime'].indexOf(x.node.rel)>=0;
+    if(!x.shared&&!ordinal) return;
+    var label=x.shared?x.node.label:'similar '+RELATIONS[x.node.rel].label;
+    if(seen[label]) return;
+    seen[label]=1;out.push(label);
+  });
+  return out;
+}
+
 function baseTitle(t){
-  return(t||'').replace(/\s*\((?:High|Low|Medium|Vocal All|Bass|Baritone|Soprano|Alto|Tenor|Mezzo Soprano)[^)]*\)\s*$/i,'').trim();
+  return(t||'').replace(/\s*\((?:High|Low|Medium|Vocal All|Bass|Baritone|Soprano|Alto|Tenor|Mezzo(?: Soprano)?)[^)]*\)\s*$/i,'').trim();
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -313,8 +436,11 @@ function renderTable(songs,containerId,transposeForMen,topK){
   if(!el) return;
   if(!songs||!songs.length){el.innerHTML='<div class="empty-row">No songs match the current filters.</div>';return;}
   var rows=songs.slice(0,topK||songs.length);
+  var showSimilarity=rows.some(function(s){return s._similarityScore!==null&&s._similarityScore!==undefined;});
+  var cols=DISPLAY_COLS.slice();
+  if(showSimilarity) cols.push('Similarity','Why');
   var html='<table><thead><tr><th>#</th>';
-  DISPLAY_COLS.forEach(function(c){html+='<th>'+esc(colLabel(c))+'</th>';});
+  cols.forEach(function(c){html+='<th>'+esc(colLabel(c))+'</th>';});
   html+='</tr></thead><tbody>';
   rows.forEach(function(s,i){
     var rt=String(s['Runtime of Song']||'').trim();
@@ -324,7 +450,12 @@ function renderTable(songs,containerId,transposeForMen,topK){
     ['Title','Composer','VocalRange','Class','Language','Genre','Era'].forEach(function(c){
       html+='<td>'+esc(s[c]||'')+'</td>';
     });
-    html+='<td>'+esc(noteRange)+'</td><td>'+esc(rt)+'</td></tr>';
+    html+='<td>'+esc(noteRange)+'</td><td>'+esc(rt)+'</td>';
+    if(showSimilarity){
+      html+='<td>'+esc(s._similarityScore==null?'':s._similarityScore.toFixed(2))+'</td>';
+      html+='<td class="why">'+esc((s._why||[]).join(' · '))+'</td>';
+    }
+    html+='</tr>';
   });
   html+='</tbody></table>';
   el.innerHTML=html;
@@ -419,27 +550,44 @@ function renderOverview(songs){
 // ════════════════════════════════════════════════════════════════
 // PIPELINE CACHE
 // ════════════════════════════════════════════════════════════════
-var _pprKey=null;
+var _similarityKey=null;
+var _graphKey=null,_graph=null;
 
-function getPprScores(querySongIdx,features,excludeTranspositions){
+function getSimilarityScores(querySongIdx,features,excludeTranspositions){
   var key=querySongIdx+'|'+features.join(',')+'|'+excludeTranspositions;
-  if(key===_pprKey) return;
+  if(key===_similarityKey) return;
 
-  _pprKey=key;
-  var matrix=buildFeatureMatrix(allSongs,features);
-  var scores=computePPR(matrix,querySongIdx);
+  _similarityKey=key;
+  var fKey=features.join(',');
+  if(fKey!==_graphKey){
+    _graph=buildAttributeGraph(allSongs,features);
+    _graphKey=fKey;
+  }
+  var ppr=personalizedPageRank(_graph,querySongIdx);
 
-  allSongs.forEach(function(s){s._pprScore=null;});
+  allSongs.forEach(function(s){s._pprRaw=null;s._why=null;});
 
-  var querySong=allSongs[querySongIdx];
-  var queryBase=baseTitle(querySong.Title).toLowerCase();
-
+  var queryBase=baseTitle(allSongs[querySongIdx].Title).toLowerCase();
   allSongs.forEach(function(s,i){
-    if(i===querySongIdx){s._pprScore=null;return;}
-    if(excludeTranspositions&&queryBase&&(s.Title||'').toLowerCase().startsWith(queryBase)){
-      s._pprScore=null;return;
-    }
-    s._pprScore=scores[i];
+    if(i===querySongIdx) return;
+    if(excludeTranspositions&&queryBase&&(s.Title||'').toLowerCase().startsWith(queryBase)) return;
+    s._pprRaw=_graph.baseline[i]>0?ppr[i]/_graph.baseline[i]:0;
+    s._why=explainScore(_graph,ppr,i,querySongIdx);
+  });
+}
+
+// Lift spans orders of magnitude, so scores are log-scaled between the
+// weakest and strongest lift among the songs the student can currently see:
+// 1.00 = best visible match, 0.00 = weakest.
+function scaleSimilarity(songs){
+  allSongs.forEach(function(s){s._similarityScore=null;});
+  var max=0,min=Infinity;
+  songs.forEach(function(s){if(s._pprRaw>max) max=s._pprRaw;if(s._pprRaw<min) min=s._pprRaw;});
+  min=Math.max(min,max*1e-4);
+  var span=Math.log(max/min);
+  songs.forEach(function(s){
+    var v=span>0?Math.log(Math.max(s._pprRaw,min)/min)/span:1;
+    s._similarityScore=Math.max(0,Math.min(1,v));
   });
 }
 
@@ -464,7 +612,7 @@ function runPipeline(){
 
   if(selClass.length){var cs={};selClass.forEach(function(v){cs[v]=1;});filtered=filtered.filter(function(s){return cs[s.Class];});}
 
-  if(selLang.length){var ls={};selLang.forEach(function(v){ls[v.toLowerCase()]=1;});filtered=filtered.filter(function(s){return ls[(s.Language||'').toLowerCase()];});}
+  if(selLang.length){var ls={};selLang.forEach(function(v){ls[v.toLowerCase()]=1;});filtered=filtered.filter(function(s){return ls[normLang(s.Language)];});}
 
   var simEnabled=false;
   var chkSim=document.getElementById('chk-similarity');
@@ -472,7 +620,7 @@ function runPipeline(){
     var refVal=document.getElementById('sel-reference').value;
     var simMin=parseFloat(document.getElementById('slider-sim-min').value)||0;
     var feats=[];
-    var featMap=[['feat-vocalrange','VocalRange'],['feat-class','Class'],['feat-language','Language'],
+    var featMap=[['feat-composer','Composer'],['feat-vocalrange','VocalRange'],['feat-language','Language'],
       ['feat-genre','Genre'],['feat-era','Era'],['feat-rangespan','RangeSpan'],['feat-runtime','Runtime']];
     featMap.forEach(function(p){var el=document.getElementById(p[0]);if(el&&el.checked) feats.push(p[1]);});
     var excl=document.getElementById('chk-exclude-transpositions').checked;
@@ -481,15 +629,32 @@ function runPipeline(){
       var qIdx=parseInt(refVal,10);
       if(isFinite(qIdx)&&qIdx>=0&&qIdx<allSongs.length){
         try{
-          getPprScores(qIdx,feats,excl);
-          filtered=filtered.filter(function(s){return s._pprScore!==null&&s._pprScore>=simMin;});
-          if(filtered.length) simEnabled=true;
-        }catch(e){console.warn('PPR error:',e);}
+          getSimilarityScores(qIdx,feats,excl);
+          filtered=filtered.filter(function(s){return s._pprRaw!=null;});
+          scaleSimilarity(filtered);
+          filtered=filtered.filter(function(s){return s._similarityScore>=simMin;});
+          if(filtered.length){
+            simEnabled=true;
+            var simValues=filtered.map(function(s){return s._similarityScore;});
+            var simHint=document.getElementById('sim-score-hint');
+            if(simHint){
+              var simMinShown=Math.min.apply(null,simValues);
+              var simMaxShown=Math.max.apply(null,simValues);
+              simHint.textContent='Showing similarity scores '+
+                simMinShown.toFixed(2)+'–'+simMaxShown.toFixed(2)+' (1.00 = closest match).';
+            }
+          }else{
+            var simHint=document.getElementById('sim-score-hint');
+            if(simHint) simHint.textContent='';
+          }
+        }catch(e){console.warn('Similarity scoring error:',e);}
       }
     }
   } else {
-    allSongs.forEach(function(s){s._pprScore=null;});
-    _pprKey=null;
+    allSongs.forEach(function(s){s._similarityScore=null;});
+    _similarityKey=null;
+    var simHint=document.getElementById('sim-score-hint');
+    if(simHint) simHint.textContent='';
   }
 
   var basedFiltered=filtered.slice();
@@ -522,7 +687,7 @@ function runPipeline(){
       displaySongs.sort(function(a,b){
         var rd=(b._rangeScore||0)-(a._rangeScore||0);
         if(rd!==0) return rd;
-        return(b._pprScore||0)-(a._pprScore||0);
+        return(b._similarityScore||0)-(a._similarityScore||0);
       });
     }
   } else {
@@ -530,12 +695,12 @@ function runPipeline(){
     if(hintHigh) hintHigh.textContent='';
     if(hintBoth) hintBoth.textContent='';
     if(simEnabled){
-      displaySongs.sort(function(a,b){return(b._pprScore||0)-(a._pprScore||0);});
+      displaySongs.sort(function(a,b){return(b._similarityScore||0)-(a._similarityScore||0);});
     }
   }
 
   if(simEnabled){
-    missingSongs.sort(function(a,b){return(b._pprScore||0)-(a._pprScore||0);});
+    missingSongs.sort(function(a,b){return(b._similarityScore||0)-(a._similarityScore||0);});
   }
 
   renderTable(displaySongs,'tbl-main',transposeForMen,topK);
@@ -591,7 +756,7 @@ function wire(){
   var simBlock=document.getElementById('sim-block');
   chkSim.addEventListener('change',function(){
     simBlock.classList.toggle('open',chkSim.checked);
-    if(!chkSim.checked){allSongs.forEach(function(s){s._pprScore=null;});_pprKey=null;}
+    if(!chkSim.checked){allSongs.forEach(function(s){s._similarityScore=null;});_similarityKey=null;}
     runPipeline();
   });
 
@@ -614,10 +779,10 @@ function wire(){
     runPipeline();
   });
 
-  ['sel-reference','feat-vocalrange','feat-class','feat-language','feat-genre',
+  ['sel-reference','feat-composer','feat-vocalrange','feat-language','feat-genre',
    'feat-era','feat-rangespan','feat-runtime','chk-exclude-transpositions'].forEach(function(id){
     var el=document.getElementById(id); if(!el) return;
-    el.addEventListener('change',function(){_pprKey=null;runPipeline();});
+    el.addEventListener('change',function(){_similarityKey=null;runPipeline();});
   });
 
   ['input-low','input-high'].forEach(function(id){
