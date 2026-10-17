@@ -223,6 +223,17 @@ function applySimilarityConfig(cfg){
   RARITY_DAMPING=num(cfg.rarity_damping,'rarity_damping',0,1);
 }
 
+// Without a usable config, similarity is switched off but the rest of the
+// page (filters, range matching, song choice) keeps working.
+function disableSimilarity(reason){
+  var chk=document.getElementById('chk-similarity');
+  chk.checked=false;chk.disabled=true;
+  document.getElementById('sim-block').classList.remove('open');
+  var hint=document.getElementById('sim-unavailable');
+  if(hint){hint.textContent='Similarity ranking is unavailable right now ('+String(reason).replace(/\.$/,'')+').';hint.style.display='block';}
+  console.error('similarity_config.json: '+reason);
+}
+
 var VOICE_LADDER=['Soprano','Mezzo Soprano','Alto','Tenor','Baritone','Bass'];
 var SPAN_BINS=[{max:9,label:'narrow range'},{max:12,label:'moderate range'},{max:15,label:'wide range'},{max:99,label:'very wide range'}];
 var RUNTIME_BINS=[{max:119,label:'under 2 min'},{max:179,label:'2–3 min'},{max:239,label:'3–4 min'},{max:99999,label:'over 4 min'}];
@@ -745,10 +756,9 @@ function runPipeline(){
             var simValues=filtered.map(function(s){return s._similarityScore;});
             var simHint=document.getElementById('sim-score-hint');
             if(simHint){
-              var direction=simLevel===0?'least similar':
-                (simLevel===1?'most similar':'songs near the selected level');
-              simHint.textContent='Prioritizing '+direction+
-                ' songs (selected level '+simLevel.toFixed(2)+'). Scores range from '+
+              var direction=simLevel===0?'the least similar songs':
+                (simLevel===1?'the most similar songs':'songs with similarity near '+simLevel.toFixed(2));
+              simHint.textContent='Showing '+direction+' first. Scores range from '+
                 Math.min.apply(null,simValues).toFixed(2)+'–'+
                 Math.max.apply(null,simValues).toFixed(2)+
                 ' (1.00 = most similar).';
