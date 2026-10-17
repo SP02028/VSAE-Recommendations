@@ -328,12 +328,12 @@ with tab_find:
     st.divider()
     st.subheader("Find songs like one you know (optional)")
     st.caption(
-        "Pick a reference song and we'll rank the others by how strongly they connect to it through shared "
-        "composers, languages, genres and more. Rare connections (the same composer) count more than common ones "
-        "(both in English). Difficulty isn't compared, since you choose your class above. The closest match "
-        "scores 1.00, and the Why column shows the strongest connections."
+        "Pick a reference song and we'll rank the others by how strongly they connect to it through factors "
+        "that matter in your selection. The most similar match scores 1.00, and the Why column shows the "
+        "strongest connections."
     )
     similarity_enabled = False
+    similarity_level = 1.0
     use_similarity = st.checkbox("Rank songs by similarity to a reference song", value=prev_song_idx is not None)
     if use_similarity:
         if prev_song_idx is not None:
@@ -348,7 +348,12 @@ with tab_find:
         default_pos = next((i for i, o in enumerate(query_options) if o[1] == prev_song_idx), 0)
         selected_label = st.selectbox("Reference song", labels, index=default_pos)
         query_idx = query_options[labels.index(selected_label)][1]
-        similarity_min = st.slider("Minimum similarity", 0.0, 1.0, 0.0, 0.01)
+        # 1.00 = most similar first (default), 0.00 = least similar first,
+        # in between = songs scoring closest to that level first.
+        similarity_level = st.slider("Similarity preference", 0.0, 1.0, 1.0, 0.01,
+                                     help="0.00 prioritizes the least similar songs; "
+                                          "1.00 prioritizes the most similar songs.")
+        st.caption("0.00 prioritizes the least similar songs; 1.00 prioritizes the most similar songs.")
 
         st.markdown("#### Compare songs by")
         fc1, fc2 = st.columns(2)
@@ -379,14 +384,17 @@ with tab_find:
                 scored['Why'] = reasons.reindex(scored.index).apply(' · '.join)
                 # Scale so the best match among the songs the student can see is 1.00
                 scored['SimilarityScore'] = scale_to_best(scored['SimilarityScore'])
-                scored = scored[scored['SimilarityScore'] >= similarity_min]
                 if scored.empty:
                     st.warning("No songs matched the current similarity settings.")
                 else:
                     filtered = scored
                     similarity_enabled = True
-                    st.caption(f"Showing similarity scores {scored['SimilarityScore'].min():.2f}–"
-                               f"{scored['SimilarityScore'].max():.2f} (1.00 = closest match).")
+                    direction = ("the least similar songs" if similarity_level == 0 else
+                                 "the most similar songs" if similarity_level == 1 else
+                                 f"songs with similarity near {similarity_level:.2f}")
+                    st.caption(f"Showing {direction} first. Scores range from "
+                               f"{scored['SimilarityScore'].min():.2f}–{scored['SimilarityScore'].max():.2f} "
+                               "(1.00 = most similar).")
             except Exception as e:  # keep the rest of the page usable
                 st.error(f"Similarity scoring error: {e}")
 
@@ -419,14 +427,25 @@ with tab_find:
             pool[~missing], note_low, note_high, transpose_for_men
         )[fit_cols].values
     display, missing_songs = pool[~missing].copy(), pool[missing].copy()
+
+    def add_preference_keys(frame: pd.DataFrame) -> pd.DataFrame:
+        """Mirror compareSimilarityPreference in self_contained_app.js: closest to
+        the chosen level first; ties go to the less similar song below 0.5 and
+        the more similar song from 0.5 up."""
+        frame = frame.copy()
+        score = frame['SimilarityScore'].fillna(0) if similarity_enabled else pd.Series(0.0, index=frame.index)
+        frame['_pref_dist'] = (score - similarity_level).abs() if similarity_enabled else 0.0
+        frame['_pref_tie'] = (score if similarity_enabled and similarity_level < 0.5 else -score)
+        return frame
+
+    pref_keys = ['_pref_dist', '_pref_tie']
     if range_active:
-        display['_sim'] = display['SimilarityScore'] if similarity_enabled else 0.0
-        display = display.sort_values(['RangeOut', '_sim', 'CenterDist'], ascending=[True, False, True],
-                                      na_position='last', kind='stable')
+        display = add_preference_keys(display).sort_values(
+            ['RangeOut'] + pref_keys + ['CenterDist'], na_position='last', kind='stable')
     elif similarity_enabled:
-        display = display.sort_values('SimilarityScore', ascending=False, kind='stable')
+        display = add_preference_keys(display).sort_values(pref_keys, kind='stable')
     if similarity_enabled:
-        missing_songs = missing_songs.sort_values('SimilarityScore', ascending=False, kind='stable')
+        missing_songs = add_preference_keys(missing_songs).sort_values(pref_keys, kind='stable')
     display, missing_songs = collapse_versions([display, missing_songs], pool, range_active)
 
     # ── Results ──
