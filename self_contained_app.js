@@ -402,11 +402,21 @@ function explainScore(g,ppr,songIdx,queryIdx){
 function baseTitle(t){
   return(t||'').replace(/\s*\((?:High|Low|Medium|Vocal All|Bass|Baritone|Soprano|Alto|Tenor|Mezzo(?: Soprano)?)[^)]*\)\s*$/i,'').trim();
 }
+
+// ════════════════════════════════════════════════════════════════
+// ONE ROW PER SONG IN RECOMMENDATIONS
+// ════════════════════════════════════════════════════════════════
+// Many songs are listed once per key/voicing (e.g. "Silent Noon (High)" and
+// "Silent Noon (Low)"). Recommendations keep only the best-ranked version so
+// each slot is a different song; the other versions are listed alongside it.
+// Composer is part of the key because some titles are different arrangements
+// (e.g. Wayfaring Stranger by Walters vs. Niles).
 function songGroupKey(s){
   return baseTitle(s.Title).toLowerCase()+'|'+String(s.Composer||'').trim().toLowerCase();
 }
 
-// "Also in" lists other versions by key 
+// "Also in" lists other versions by key (falls back to the title's
+// parenthetical, e.g. "Low", when a row has no key).
 function versionLabel(s){
   var k=String(s.Key||'').trim();
   if(k) return k;
@@ -414,7 +424,10 @@ function versionLabel(s){
   return m?m[1]:(s.VocalRange||'other version');
 }
 
-
+// When range matching is on, the version shown is the one that fits best:
+// fewest semitones outside the range, then the one whose middle is closest
+// to the middle of the singer's range (e.g. for B3–A5, Amarilli High
+// D4–E5 rather than Low B3–C#5, which sits at the bottom of the range).
 function bestFitVersion(group){
   var best=null;
   group.forEach(function(s){
