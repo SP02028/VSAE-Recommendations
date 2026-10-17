@@ -223,17 +223,6 @@ function applySimilarityConfig(cfg){
   RARITY_DAMPING=num(cfg.rarity_damping,'rarity_damping',0,1);
 }
 
-// Without a usable config, similarity is switched off but the rest of the
-// page (filters, range matching, song choice) keeps working.
-function disableSimilarity(reason){
-  var chk=document.getElementById('chk-similarity');
-  chk.checked=false;chk.disabled=true;
-  document.getElementById('sim-block').classList.remove('open');
-  var hint=document.getElementById('sim-unavailable');
-  if(hint){hint.textContent='Similarity ranking is unavailable right now ('+String(reason).replace(/\.$/,'')+').';hint.style.display='block';}
-  console.error('similarity_config.json: '+reason);
-}
-
 var VOICE_LADDER=['Soprano','Mezzo Soprano','Alto','Tenor','Baritone','Bass'];
 var SPAN_BINS=[{max:9,label:'narrow range'},{max:12,label:'moderate range'},{max:15,label:'wide range'},{max:99,label:'very wide range'}];
 var RUNTIME_BINS=[{max:119,label:'under 2 min'},{max:179,label:'2–3 min'},{max:239,label:'3–4 min'},{max:99999,label:'over 4 min'}];
@@ -402,21 +391,11 @@ function explainScore(g,ppr,songIdx,queryIdx){
 function baseTitle(t){
   return(t||'').replace(/\s*\((?:High|Low|Medium|Vocal All|Bass|Baritone|Soprano|Alto|Tenor|Mezzo(?: Soprano)?)[^)]*\)\s*$/i,'').trim();
 }
-
-// ════════════════════════════════════════════════════════════════
-// ONE ROW PER SONG IN RECOMMENDATIONS
-// ════════════════════════════════════════════════════════════════
-// Many songs are listed once per key/voicing (e.g. "Silent Noon (High)" and
-// "Silent Noon (Low)"). Recommendations keep only the best-ranked version so
-// each slot is a different song; the other versions are listed alongside it.
-// Composer is part of the key because some titles are different arrangements
-// (e.g. Wayfaring Stranger by Walters vs. Niles).
 function songGroupKey(s){
   return baseTitle(s.Title).toLowerCase()+'|'+String(s.Composer||'').trim().toLowerCase();
 }
 
-// "Also in" lists other versions by key (falls back to the title's
-// parenthetical, e.g. "Low", when a row has no key).
+// "Also in" lists other versions by key 
 function versionLabel(s){
   var k=String(s.Key||'').trim();
   if(k) return k;
@@ -424,10 +403,7 @@ function versionLabel(s){
   return m?m[1]:(s.VocalRange||'other version');
 }
 
-// When range matching is on, the version shown is the one that fits best:
-// fewest semitones outside the range, then the one whose middle is closest
-// to the middle of the singer's range (e.g. for B3–A5, Amarilli High
-// D4–E5 rather than Low B3–C#5, which sits at the bottom of the range).
+
 function bestFitVersion(group){
   var best=null;
   group.forEach(function(s){
@@ -710,6 +686,18 @@ function scaleSimilarity(songs){
   });
 }
 
+// Rank candidates by the similarity level selected on the slider:
+// 0.00 favors the least similar songs, 1.00 favors the most similar songs,
+// and intermediate values favor scores closest to that level.
+function compareSimilarityPreference(a,b,level){
+  var aDistance=Math.abs((a._similarityScore||0)-level);
+  var bDistance=Math.abs((b._similarityScore||0)-level);
+  if(aDistance!==bDistance) return aDistance-bDistance;
+  return level<0.5?
+    (a._similarityScore||0)-(b._similarityScore||0):
+    (b._similarityScore||0)-(a._similarityScore||0);
+}
+
 // ════════════════════════════════════════════════════════════════
 // MAIN PIPELINE
 // ════════════════════════════════════════════════════════════════
@@ -737,7 +725,7 @@ function runPipeline(){
   var chkSim=document.getElementById('chk-similarity');
   if(chkSim&&chkSim.checked){
     var refVal=document.getElementById('sel-reference').value;
-    var simMin=parseFloat(document.getElementById('slider-sim-min').value)||0;
+    var simLevel=parseFloat(document.getElementById('slider-sim-min').value)||0;
     var feats=[];
     var featMap=[['feat-composer','Composer'],['feat-vocalrange','VocalRange'],['feat-language','Language'],
       ['feat-genre','Genre'],['feat-era','Era'],['feat-rangespan','RangeSpan'],['feat-runtime','Runtime']];
@@ -751,16 +739,19 @@ function runPipeline(){
           getSimilarityScores(qIdx,feats,excl);
           filtered=filtered.filter(function(s){return s._pprRaw!=null;});
           scaleSimilarity(filtered);
-          filtered=filtered.filter(function(s){return s._similarityScore>=simMin;});
+          filtered.sort(function(a,b){return compareSimilarityPreference(a,b,simLevel);});
           if(filtered.length){
             simEnabled=true;
             var simValues=filtered.map(function(s){return s._similarityScore;});
             var simHint=document.getElementById('sim-score-hint');
             if(simHint){
-              var simMinShown=Math.min.apply(null,simValues);
-              var simMaxShown=Math.max.apply(null,simValues);
-              simHint.textContent='Showing similarity scores '+
-                simMinShown.toFixed(2)+'–'+simMaxShown.toFixed(2)+' (1.00 = closest match).';
+              var direction=simLevel===0?'least similar':
+                (simLevel===1?'most similar':'songs near the selected level');
+              simHint.textContent='Prioritizing '+direction+
+                ' songs (selected level '+simLevel.toFixed(2)+'). Scores range from '+
+                Math.min.apply(null,simValues).toFixed(2)+'–'+
+                Math.max.apply(null,simValues).toFixed(2)+
+                ' (1.00 = most similar).';
             }
           }else{
             var simHint=document.getElementById('sim-score-hint');
@@ -815,20 +806,20 @@ function runPipeline(){
       displaySongs.sort(function(a,b){
         var rd=(a._rangeOut==null?999:a._rangeOut)-(b._rangeOut==null?999:b._rangeOut);
         if(rd!==0) return rd;
-        var sd=(b._similarityScore||0)-(a._similarityScore||0);
-        if(sd!==0) return sd;
+        if(simEnabled){
+          var sd=compareSimilarityPreference(a,b,simLevel);
+          if(sd!==0) return sd;
+        }
         return(a._rangeCenterDist||0)-(b._rangeCenterDist||0);
       });
     }else if(simEnabled){
-      // No usable range yet: rank by similarity alone. (This used to sit in
-      // an else-branch for the old range checkbox, which became unreachable
-      // once range matching was always on.)
-      displaySongs.sort(function(a,b){return(b._similarityScore||0)-(a._similarityScore||0);});
+      // No usable range yet: rank by the selected similarity preference.
+      displaySongs.sort(function(a,b){return compareSimilarityPreference(a,b,simLevel);});
     }
   }
 
   if(simEnabled){
-    missingSongs.sort(function(a,b){return(b._similarityScore||0)-(a._similarityScore||0);});
+    missingSongs.sort(function(a,b){return compareSimilarityPreference(a,b,simLevel);});
   }
 
   var collapsed=collapseVersions([displaySongs,missingSongs],basedFiltered,lowMidi!=null&&highMidi!=null&&rangeEnabled);

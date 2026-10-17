@@ -218,9 +218,7 @@ td.fit-out{color:var(--error);}
       <section class="section" aria-labelledby="h-similar">
         <h3 id="h-similar">Find songs like one you know (optional)</h3>
         <p class="caption">
-          Pick a reference song and we'll rank the others by how strongly they connect to it through shared composers,
-          languages, genres and more. Rare connections (the same composer) count more than common ones (both in English).
-          Difficulty isn't compared, since you choose your class above. The closest match scores 1.00,
+          Pick a reference song and we'll rank the others by how strongly they connect to it through factors that matter in your selection. The most similar match scores 1.00,
           and the Why column shows the strongest connections.
         </p>
         <div class="caption parse-err" id="sim-unavailable" style="display:none;"></div>
@@ -235,10 +233,11 @@ td.fit-out{color:var(--error);}
           <select id="sel-reference"></select>
 
           <div class="slider-wrap">
-            <label for="slider-sim-min">Minimum similarity <span id="sim-min-label" class="slider-val">0.00</span></label>
+            <label for="slider-sim-min">Similarity preference <span id="sim-min-label" class="slider-val">0.00</span></label>
             <div class="slider-row">
               <input type="range" id="slider-sim-min" min="0" max="1" step="0.01" value="0"/>
             </div>
+            <div class="caption">0.00 prioritizes the least similar songs; 1.00 prioritizes the most similar songs.</div>
             <div class="caption" id="sim-score-hint"></div>
           </div>
 
