@@ -727,6 +727,8 @@ function compareSimilarityPreference(a,b,level){
 // ════════════════════════════════════════════════════════════════
 var allSongs=null;
 
+var _recContext=null;
+
 function runPipeline(){
   if(!allSongs) return;
 
@@ -854,6 +856,16 @@ function runPipeline(){
   renderTable(displaySongs,'tbl-main',transposeForMen,topK);
   renderTable(missingSongs,'tbl-missing',transposeForMen,topK);
 
+  // Settings behind the list the student is looking at, sent with Submit.
+  _recContext={
+    sim:simEnabled,
+    refSong:simEnabled?String(allSongs[qIdx].Song_Code||'').trim():'',
+    simLevel:simEnabled?simLevel:null,
+    features:simEnabled?feats.slice():[],
+    voices:(!selVR.length||selVR.length>=VOICE_LADDER.length)?'All':selVR.join(','),
+    range:(lowMidi!=null&&highMidi!=null)?midiToNote(lowMidi)+'-'+midiToNote(highMidi):''
+  };
+
   // ── NEW: Populate song-selection dropdown ────────────────────
   var selChosen=document.getElementById('sel-chosen-song');
   if(selChosen){
@@ -867,11 +879,18 @@ function runPipeline(){
 
     // Every version of each recommended song is selectable, so students
     // can still register the key that suits them.
-    var recommended=displaySongs.slice(0,topK).concat(missingSongs.slice(0,topK));
-    recommended.forEach(function(song){
+    // Each option remembers where its song appeared (list and 1-based rank)
+    // so Submit can report it to the registration form (RecRank etc.).
+    var recommended=displaySongs.slice(0,topK).map(function(s,i){return{song:s,list:'main',rank:i+1};})
+      .concat(missingSongs.slice(0,topK).map(function(s,i){return{song:s,list:'more',rank:i+1};}));
+    recommended.forEach(function(item){
+      var song=item.song;
       [song].concat(song._otherKeys||[]).forEach(function(v,vi){
         var opt=document.createElement('option');
         opt.value=String(v.Song_Code||'');
+        opt.dataset.recList=item.list;
+        opt.dataset.recRank=String(item.rank);
+        opt.dataset.recAltKey=vi?'1':'0';
         opt.textContent=(vi?'\u00a0\u00a0\u21b3 ':'')+v.Title+' | '+v.VocalRange+' | Class '+(v.Class||'')+(v.Key?' | Key '+v.Key:'')+' | '+(v.Language||'');
         selChosen.appendChild(opt);
       });
@@ -951,7 +970,7 @@ function wire(){
         alert('Please select a song from the dropdown first.');
         return;
       }
-      window.location.href=REGISTRATION_URL+'?StudentID='+encodeURIComponent(getParam('StudentID'))+'&song-code='+encodeURIComponent(songCode);
+      window.location.href=REGISTRATION_URL+'?'+buildSubmitQuery(songCode,selChosen.options[selChosen.selectedIndex]);
     });
   }
 
@@ -967,6 +986,34 @@ function wire(){
 // URL PARAMETERS (from the aveschoir.org registration form)
 // ════════════════════════════════════════════════════════════════
 var REGISTRATION_URL='https://aveschoir.org/Vocal-Solo-Event';
+
+// Version tag of this script (the ?v= on its URL), e.g. "2026-10-16.1".
+function appVersion(){
+  var s=[].slice.call(document.scripts).filter(function(x){return /self_contained_app\.js/.test(x.src);})[0];
+  var v=s&&new URL(s.src,location.href).searchParams.get('v');
+  return v||'unknown';
+}
+
+// StudentID and song-code (what the registration form needs) plus optional
+// Rec* values the form stores for tuning the recommender. NA = not used.
+function buildSubmitQuery(songCode,opt){
+  var c=_recContext||{};
+  var d=(opt&&opt.dataset)||{};
+  var p=new URLSearchParams();
+  p.set('StudentID',getParam('StudentID'));
+  p.set('song-code',songCode);
+  p.set('RecRank',d.recRank||'NA');
+  p.set('RecList',d.recList||'NA');
+  p.set('RecAltKey',d.recAltKey||'NA');
+  p.set('RecSim',c.sim?'1':'0');
+  p.set('RecRefSong',c.sim&&c.refSong?c.refSong:'NA');
+  p.set('RecSimLevel',c.sim&&c.simLevel!=null?c.simLevel.toFixed(2):'NA');
+  p.set('RecFeatures',c.sim&&c.features.length?c.features.join(','):'NA');
+  p.set('RecVoices',c.voices||'NA');
+  p.set('RecRange',c.range||'NA');
+  p.set('RecVersion',appVersion());
+  return p.toString();
+}
 
 function getParam(name){
   var v=new URLSearchParams(window.location.search||'').get(name);
