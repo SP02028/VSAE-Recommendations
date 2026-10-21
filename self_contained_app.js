@@ -861,9 +861,7 @@ function runPipeline(){
     sim:simEnabled,
     refSong:simEnabled?String(allSongs[qIdx].Song_Code||'').trim():'',
     simLevel:simEnabled?simLevel:null,
-    features:simEnabled?feats.slice():[],
-    voices:(!selVR.length||selVR.length>=VOICE_LADDER.length)?'All':selVR.join(','),
-    range:(lowMidi!=null&&highMidi!=null)?midiToNote(lowMidi)+'-'+midiToNote(highMidi):''
+    features:simEnabled?feats.slice():[]
   };
 
   // ── NEW: Populate song-selection dropdown ────────────────────
@@ -890,7 +888,6 @@ function runPipeline(){
         opt.value=String(v.Song_Code||'');
         opt.dataset.recList=item.list;
         opt.dataset.recRank=String(item.rank);
-        opt.dataset.recAltKey=vi?'1':'0';
         opt.textContent=(vi?'\u00a0\u00a0\u21b3 ':'')+v.Title+' | '+v.VocalRange+' | Class '+(v.Class||'')+(v.Key?' | Key '+v.Key:'')+' | '+(v.Language||'');
         selChosen.appendChild(opt);
       });
@@ -987,14 +984,7 @@ function wire(){
 // ════════════════════════════════════════════════════════════════
 var REGISTRATION_URL='https://aveschoir.org/Vocal-Solo-Event';
 
-// Version tag of this script (the ?v= on its URL), e.g. "2026-10-16.1".
-function appVersion(){
-  var s=[].slice.call(document.scripts).filter(function(x){return /self_contained_app\.js/.test(x.src);})[0];
-  var v=s&&new URL(s.src,location.href).searchParams.get('v');
-  return v||'unknown';
-}
-
-// StudentID and song-code (what the registration form needs) plus optional
+// StudentID and song-code (what the registration form needs) plus the six
 // Rec* values the form stores for tuning the recommender. NA = not used.
 function buildSubmitQuery(songCode,opt){
   var c=_recContext||{};
@@ -1004,14 +994,10 @@ function buildSubmitQuery(songCode,opt){
   p.set('song-code',songCode);
   p.set('RecRank',d.recRank||'NA');
   p.set('RecList',d.recList||'NA');
-  p.set('RecAltKey',d.recAltKey||'NA');
   p.set('RecSim',c.sim?'1':'0');
   p.set('RecRefSong',c.sim&&c.refSong?c.refSong:'NA');
   p.set('RecSimLevel',c.sim&&c.simLevel!=null?c.simLevel.toFixed(2):'NA');
   p.set('RecFeatures',c.sim&&c.features.length?c.features.join(','):'NA');
-  p.set('RecVoices',c.voices||'NA');
-  p.set('RecRange',c.range||'NA');
-  p.set('RecVersion',appVersion());
   return p.toString();
 }
 
